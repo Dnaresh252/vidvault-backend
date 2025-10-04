@@ -10,7 +10,7 @@ router.use(apiLimiter);
 // Public routes
 router.get("/platforms", downloadController.getSupportedPlatforms);
 router.post("/metadata", downloadController.getVideoMetadata);
-router.get("/stats", downloadController.getStats);
+router.get("/stats", statsController.getStats); // CHANGE THIS LINE
 // Thumbnail proxy (CORS fix)
 router.get("/thumbnail", downloadController.proxyThumbnail);
 
