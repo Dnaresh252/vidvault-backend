@@ -1,19 +1,19 @@
 const express = require("express");
 const downloadController = require("../controllers/downloadController");
-const statsController = require("../controllers/statsController");
 const { downloadLimiter, apiLimiter } = require("../middleware/rateLimiting");
-
+const statsController = require("../controllers/statsController");
 const router = express.Router();
 
+// Apply general rate limiting
 router.use(apiLimiter);
 
 // Public routes
 router.get("/platforms", downloadController.getSupportedPlatforms);
 router.post("/metadata", downloadController.getVideoMetadata);
-router.get("/thumbnail", downloadController.proxyThumbnail);
-
-// Stats route
 router.get("/stats", statsController.getStats);
+
+// Thumbnail proxy (CORS fix)
+router.get("/thumbnail", downloadController.proxyThumbnail);
 
 // Main download route with strict rate limiting
 router.post("/video", downloadLimiter, downloadController.downloadVideo);
