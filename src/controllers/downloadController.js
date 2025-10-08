@@ -15,15 +15,17 @@ exports.downloadVideo = async (req, res, next) => {
       audioOnly = false,
     } = req.body;
 
-    if (!url) {
+    // Validate URL
+    if (!url || typeof url !== "string" || url.trim().length === 0) {
       return res.status(400).json({
         status: "error",
-        message: "URL is required",
+        message: "Valid URL is required",
       });
     }
 
+    // Validate download request
     const validation = videoDownloader.validateDownloadRequest({
-      url,
+      url: url.trim(),
       quality,
       format,
     });
@@ -35,9 +37,14 @@ exports.downloadVideo = async (req, res, next) => {
       });
     }
 
+    // Extract user info
     const userIP = req.ip || req.connection.remoteAddress;
     const userAgent = req.get("User-Agent");
 
+    console.log(`\n📥 New download request from ${userIP}`);
+    console.log(`🔗 URL: ${url.substring(0, 80)}...`);
+
+    // Perform download
     const downloadResult = await videoDownloader.downloadVideo({
       url: url.trim(),
       quality,
@@ -48,6 +55,7 @@ exports.downloadVideo = async (req, res, next) => {
     });
 
     if (!downloadResult.success) {
+      console.error(`❌ Download failed: ${downloadResult.error}`);
       return res.status(400).json({
         status: "error",
         message: downloadResult.error,
@@ -55,16 +63,21 @@ exports.downloadVideo = async (req, res, next) => {
       });
     }
 
+    console.log(`✅ Download successful: ${downloadResult.data.title}`);
+
+    // Return success response
     res.status(200).json({
       status: "success",
       message: downloadResult.message,
       data: downloadResult.data,
     });
   } catch (error) {
-    console.error("Download controller error:", error);
+    console.error("❌ Download controller error:", error);
     res.status(500).json({
       status: "error",
-      message: "Internal server error during download",
+      message: "An unexpected error occurred. Please try again.",
+      details:
+        process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -76,31 +89,67 @@ exports.proxyThumbnail = async (req, res) => {
   try {
     const { url } = req.query;
 
-    if (!url) {
-      return res.status(400).send();
+    if (!url || typeof url !== "string") {
+      return res.status(400).json({
+        status: "error",
+        message: "Thumbnail URL is required",
+      });
+    }
+
+    // Validate URL format
+    try {
+      new URL(url);
+    } catch (e) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid thumbnail URL",
+      });
     }
 
     const response = await fetch(url, {
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
       },
+      timeout: 10000,
     });
 
     if (!response.ok) {
-      return res.status(404).send();
+      console.warn(
+        `Thumbnail fetch failed: ${response.status} ${response.statusText}`
+      );
+      return res.status(404).json({
+        status: "error",
+        message: "Thumbnail not found",
+      });
     }
 
     const buffer = await response.arrayBuffer();
     const contentType = response.headers.get("content-type") || "image/jpeg";
 
+    // Set caching and CORS headers
     res.set("Content-Type", contentType);
-    res.set("Cache-Control", "public, max-age=86400");
+    res.set("Cache-Control", "public, max-age=86400, immutable");
     res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.set("Access-Control-Max-Age", "86400");
+
     res.send(Buffer.from(buffer));
   } catch (error) {
-    console.error("Thumbnail proxy error:", error);
-    res.status(500).send();
+    console.error("Thumbnail proxy error:", error.message);
+
+    // Return a 1x1 transparent pixel as fallback
+    const transparentPixel = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+      "base64"
+    );
+
+    res.set("Content-Type", "image/png");
+    res.set("Cache-Control", "public, max-age=60");
+    res.send(transparentPixel);
   }
 };
 
@@ -111,14 +160,17 @@ exports.getVideoMetadata = async (req, res, next) => {
   try {
     const { url } = req.body;
 
-    if (!url) {
+    if (!url || typeof url !== "string" || url.trim().length === 0) {
       return res.status(400).json({
         status: "error",
-        message: "URL is required",
+        message: "Valid URL is required",
       });
     }
 
-    const detection = platformDetector.detectPlatform(url);
+    console.log(`📋 Metadata request for: ${url.substring(0, 60)}...`);
+
+    // Detect platform
+    const detection = platformDetector.detectPlatform(url.trim());
     if (!detection.success) {
       return res.status(400).json({
         status: "error",
@@ -126,12 +178,30 @@ exports.getVideoMetadata = async (req, res, next) => {
       });
     }
 
-    const metadata = await videoDownloader.getVideoMetadata(url);
+    console.log(`✓ Platform: ${detection.platformName}`);
+
+    // Get metadata with timeout
+    const metadataPromise = videoDownloader.getVideoMetadata(
+      url.trim(),
+      detection.platform
+    );
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Metadata fetch timeout")), 30000)
+    );
+
+    const metadata = await Promise.race([metadataPromise, timeoutPromise]);
+
+    console.log(`✓ Metadata retrieved: ${metadata.title}`);
 
     res.status(200).json({
       status: "success",
       data: {
-        platform: detection,
+        platform: {
+          key: detection.platform,
+          name: detection.platformName,
+          videoId: detection.videoId,
+          supported: detection.supported,
+        },
         metadata: {
           title: metadata.title,
           description: metadata.description,
@@ -142,15 +212,35 @@ exports.getVideoMetadata = async (req, res, next) => {
           uploader: metadata.uploader,
           uploaderVerified: metadata.uploader_verified,
         },
-        availableFormats: detection.availableFormats,
-        qualityOptions: platformDetector.getQualityOptions(detection.platform),
+        downloadOptions: {
+          availableFormats: detection.availableFormats,
+          qualityOptions: platformDetector.getQualityOptions(
+            detection.platform
+          ),
+          recommendedQuality: "high",
+          recommendedFormat: "mp4",
+        },
       },
     });
   } catch (error) {
-    console.error("Metadata controller error:", error);
+    console.error("❌ Metadata error:", error.message);
+
+    // Return user-friendly error
+    let errorMessage = "Failed to fetch video information. ";
+
+    if (error.message.includes("timeout")) {
+      errorMessage += "The request took too long. Please try again.";
+    } else if (error.message.includes("private")) {
+      errorMessage += "This video is private.";
+    } else if (error.message.includes("unavailable")) {
+      errorMessage += "This video is unavailable.";
+    } else {
+      errorMessage += "Please check the URL and try again.";
+    }
+
     res.status(500).json({
       status: "error",
-      message: "Error fetching video metadata",
+      message: errorMessage,
     });
   }
 };
@@ -167,6 +257,14 @@ exports.getSupportedPlatforms = (req, res, next) => {
       data: {
         platforms,
         totalSupported: platforms.length,
+        features: {
+          multiQuality: true,
+          multiFormat: true,
+          audioExtraction: true,
+          thumbnailDownload: true,
+          metadataExtraction: true,
+          batchDownload: false, // Premium feature
+        },
       },
     });
   } catch (error) {
@@ -184,12 +282,14 @@ exports.getSupportedPlatforms = (req, res, next) => {
 exports.serveFile = async (req, res, next) => {
   try {
     const { filename } = req.params;
-    const cleanupService = require("../services/cleanupService");
 
+    // Security: Prevent directory traversal
     if (
+      !filename ||
       filename.includes("..") ||
       filename.includes("/") ||
-      filename.includes("\\")
+      filename.includes("\\") ||
+      filename.includes("\x00")
     ) {
       return res.status(400).json({
         status: "error",
@@ -201,27 +301,65 @@ exports.serveFile = async (req, res, next) => {
     const tempDir = path.join(__dirname, "../../temp");
     const decodedFilename = decodeURIComponent(filename);
 
+    // Try downloads directory first, then temp
     let filePath = path.join(downloadsDir, decodedFilename);
+    let fileLocation = "downloads";
 
     if (!(await fs.pathExists(filePath))) {
       filePath = path.join(tempDir, decodedFilename);
+      fileLocation = "temp";
+
+      if (!(await fs.pathExists(filePath))) {
+        console.warn(`File not found: ${decodedFilename}`);
+        return res.status(404).json({
+          status: "error",
+          message: "File not found or has expired. Please download again.",
+        });
+      }
     }
 
-    if (await fs.pathExists(filePath)) {
-      const stats = await fs.stat(filePath);
-      const fileSize = stats.size;
-      const ext = path.extname(decodedFilename).toLowerCase();
-      const contentType = getContentType(ext);
-      const safeFilename = sanitizeFilenameForDownload(decodedFilename);
+    console.log(`📤 Serving file: ${decodedFilename} from ${fileLocation}`);
 
-      res.setHeader("Content-Type", contentType);
-      res.setHeader("Content-Length", fileSize);
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename*=UTF-8''${encodeURIComponent(safeFilename)}`
-      );
-      res.setHeader("Cache-Control", "private, no-cache");
-      res.setHeader("Access-Control-Allow-Origin", "*");
+    const stats = await fs.stat(filePath);
+    const fileSize = stats.size;
+    const ext = path.extname(decodedFilename).toLowerCase();
+    const contentType = getContentType(ext);
+    const safeFilename = sanitizeFilenameForDownload(decodedFilename);
+
+    // Support for range requests (resume downloads)
+    const range = req.headers.range;
+
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = end - start + 1;
+
+      res.status(206);
+      res.set({
+        "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+        "Accept-Ranges": "bytes",
+        "Content-Length": chunkSize,
+        "Content-Type": contentType,
+      });
+
+      const fileStream = fs.createReadStream(filePath, { start, end });
+      fileStream.pipe(res);
+    } else {
+      // Full file download
+      res.set({
+        "Content-Type": contentType,
+        "Content-Length": fileSize,
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(
+          safeFilename
+        )}`,
+        "Cache-Control": "private, no-cache, no-store, must-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Disposition, Content-Length",
+        "Accept-Ranges": "bytes",
+      });
 
       const fileStream = fs.createReadStream(filePath);
 
@@ -236,45 +374,106 @@ exports.serveFile = async (req, res, next) => {
       });
 
       fileStream.on("end", () => {
-        cleanupService.deleteAfterDownload(filePath, 5);
+        console.log(`✓ File served successfully: ${decodedFilename}`);
+
+        // Schedule file deletion after successful download (5 seconds delay)
+        setTimeout(async () => {
+          try {
+            if (await fs.pathExists(filePath)) {
+              await fs.remove(filePath);
+              console.log(`🗑️ Cleaned up: ${decodedFilename}`);
+            }
+          } catch (cleanupError) {
+            console.warn(
+              `Cleanup warning for ${decodedFilename}:`,
+              cleanupError.message
+            );
+          }
+        }, 5000);
       });
 
+      // Handle client disconnect
       req.on("close", () => {
         if (!res.writableEnded) {
-          cleanupService.deleteAfterDownload(filePath, 0.1);
+          console.log(
+            `⚠️ Client disconnected during download: ${decodedFilename}`
+          );
+          fileStream.destroy();
+
+          // Quick cleanup on disconnect
+          setTimeout(async () => {
+            try {
+              if (await fs.pathExists(filePath)) {
+                await fs.remove(filePath);
+                console.log(
+                  `🗑️ Cleaned up after disconnect: ${decodedFilename}`
+                );
+              }
+            } catch (cleanupError) {
+              console.warn(`Cleanup warning: ${cleanupError.message}`);
+            }
+          }, 1000);
         }
       });
 
       fileStream.pipe(res);
-      return;
     }
-
-    return res.status(404).json({
-      status: "error",
-      message: "File not found or expired",
-    });
   } catch (error) {
-    console.error("File serve error:", error);
+    console.error("❌ File serve error:", error);
     if (!res.headersSent) {
       res.status(500).json({
         status: "error",
-        message: "Error serving file",
+        message: "Error serving file. Please try again.",
       });
     }
+  }
+};
+
+// @desc    Health check for download service
+// @route   GET /api/v1/download/health
+// @access  Public
+exports.healthCheck = async (req, res) => {
+  try {
+    const health = {
+      status: "healthy",
+      timestamp: new Date().toISOString(),
+      services: {
+        videoDownloader: "operational",
+        platformDetector: "operational",
+        storage: "operational",
+      },
+      stats: {
+        supportedPlatforms: videoDownloader.getSupportedPlatforms().length,
+      },
+    };
+
+    res.status(200).json({
+      status: "success",
+      data: health,
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: "error",
+      message: "Service unhealthy",
+      timestamp: new Date().toISOString(),
+    });
   }
 };
 
 // Helper functions
 function sanitizeFilenameForDownload(filename) {
   if (!filename) return "video.mp4";
+
   const ext = path.extname(filename);
   const nameWithoutExt = path.basename(filename, ext);
+
   const cleanName = nameWithoutExt
-    .replace(/[<>:"/\\|?*]/g, "_")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
     .replace(/\s+/g, "_")
     .replace(/_+/g, "_")
-    .replace(/^_|_$/g, "")
+    .replace(/^_+|_+$/g, "")
     .substring(0, 100);
+
   return (cleanName || "video") + (ext || ".mp4");
 }
 
@@ -283,12 +482,17 @@ function getContentType(ext) {
     ".mp4": "video/mp4",
     ".mp3": "audio/mpeg",
     ".webm": "video/webm",
+    ".m4a": "audio/mp4",
     ".wav": "audio/wav",
     ".flac": "audio/flac",
+    ".mkv": "video/x-matroska",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
     ".webp": "image/webp",
   };
-  return types[ext] || "application/octet-stream";
+
+  return types[ext.toLowerCase()] || "application/octet-stream";
 }
+
+module.exports = exports;

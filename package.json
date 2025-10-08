@@ -4,12 +4,12 @@
   "description": "VidVault Backend API",
   "main": "server.js",
   "scripts": {
-  "start": "node server.js",
-  "dev": "nodemon server.js",
-  "postinstall": "python3 -m pip install --upgrade yt-dlp || pip3 install --upgrade yt-dlp || echo 'yt-dlp install skipped'",
-  "build": "echo 'Build complete'",
-  "test": "echo \"Error: no test specified\" && exit 1"
-},
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "postinstall": "python3 -m pip install --upgrade yt-dlp || pip3 install --upgrade yt-dlp || echo 'yt-dlp install skipped'",
+    "build": "echo 'Build complete'",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
   "keywords": [
     "video",
     "downloader",
@@ -28,7 +28,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "express-rate-limit": "^6.9.0",
+    "express-rate-limit": "^6.11.2",
     "fluent-ffmpeg": "^2.1.2",
     "fs-extra": "^11.1.1",
     "helmet": "^7.0.0",
