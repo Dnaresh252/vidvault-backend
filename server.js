@@ -5,7 +5,6 @@ const morgan = require("morgan");
 const compression = require("compression");
 require("dotenv").config();
 
-// Validate environment variables FIRST
 const requiredEnvVars = [
   "MONGODB_URI",
   "R2_ACCOUNT_ID",
