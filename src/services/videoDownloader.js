@@ -29,8 +29,18 @@ resolver.setServers(["8.8.8.8", "1.1.1.1"]);
 class VideoDownloaderService {
   constructor() {
     this.ytDlp = new YTDlpWrap();
-    this.downloadDir = path.join(__dirname, "../../downloads");
-    this.tempDir = path.join(__dirname, "../../temp");
+
+    // Use /tmp on Railway/production, local paths in development
+    const isProduction =
+      process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT;
+
+    if (isProduction) {
+      this.downloadDir = "/tmp/downloads";
+      this.tempDir = "/tmp/temp";
+    } else {
+      this.downloadDir = path.join(__dirname, "../../downloads");
+      this.tempDir = path.join(__dirname, "../../temp");
+    }
 
     this.activeDownloads = new Map();
     this.maxConcurrentDownloads = 4;
@@ -122,25 +132,45 @@ class VideoDownloaderService {
   }
 
   startCleanupJob() {
+    // More aggressive cleanup on Railway (every 2 minutes)
+    const cleanupInterval = process.env.RAILWAY_ENVIRONMENT
+      ? 2 * 60 * 1000
+      : 5 * 60 * 1000;
+
     setInterval(async () => {
       try {
         const now = Date.now();
-        const files = await fs.readdir(this.tempDir);
 
-        for (const file of files) {
-          const filePath = path.join(this.tempDir, file);
-          const stats = await fs.stat(filePath);
-          const age = now - stats.mtimeMs;
+        // Clean both temp and downloads directories
+        for (const dir of [this.tempDir, this.downloadDir]) {
+          try {
+            const files = await fs.readdir(dir);
 
-          if (age > 30 * 60 * 1000) {
-            await fs.remove(filePath);
-            console.log(`🗑️ Cleaned up old temp file: ${file}`);
+            for (const file of files) {
+              const filePath = path.join(dir, file);
+              const stats = await fs.stat(filePath);
+              const age = now - stats.mtimeMs;
+
+              // Delete files older than 15 minutes on Railway, 30 minutes locally
+              const maxAge = process.env.RAILWAY_ENVIRONMENT
+                ? 15 * 60 * 1000
+                : 30 * 60 * 1000;
+
+              if (age > maxAge) {
+                await fs.remove(filePath);
+                console.log(`🗑️ Cleaned up old file: ${file}`);
+              }
+            }
+          } catch (error) {
+            // Directory might not exist yet, ignore
           }
         }
       } catch (error) {
         console.error("Cleanup job error:", error.message);
       }
-    }, 5 * 60 * 1000);
+    }, cleanupInterval);
+
+    console.log(`✓ Cleanup job started (interval: ${cleanupInterval / 1000}s)`);
   }
 
   async downloadVideo(options = {}) {
