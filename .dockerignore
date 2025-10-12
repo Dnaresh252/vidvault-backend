@@ -3,4 +3,6 @@ npm-debug.log
 .env
 .git
 .gitignore
+temp/
+downloads/
 *.log
