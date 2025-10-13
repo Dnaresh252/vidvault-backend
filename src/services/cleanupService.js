@@ -10,15 +10,25 @@ require("dotenv").config();
 
 class CleanupService {
   constructor() {
-    this.tempDir = path.join(__dirname, "../../temp");
-    this.downloadsDir = path.join(__dirname, "../../downloads");
+    // FIXED: Use correct paths based on environment
+    const isProduction =
+      process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT;
 
-    // Initialize R2 client for cleanup
+    if (isProduction) {
+      this.tempDir = "/tmp/temp";
+      this.downloadsDir = "/tmp/downloads";
+      this.isProduction = true;
+    } else {
+      this.tempDir = path.join(__dirname, "../../temp");
+      this.downloadsDir = path.join(__dirname, "../../downloads");
+      this.isProduction = false;
+    }
+
     this.initializeR2Client();
   }
 
   /**
-   * Initialize R2 client for file deletion
+   * Initialize R2 client for cleanup
    */
   initializeR2Client() {
     if (!process.env.R2_ACCOUNT_ID || !process.env.R2_ACCESS_KEY_ID) {
@@ -47,26 +57,50 @@ class CleanupService {
    * Start automatic cleanup jobs
    */
   startCleanupJobs() {
-    // Clean temp files every 30 minutes
-    cron.schedule("*/30 * * * *", () => {
-      this.cleanTempFiles(1); // 1 hour old
-      console.log("Temp cleanup completed");
-    });
+    // CHANGED: Different schedules for production vs development
+    if (this.isProduction) {
+      // Production: More aggressive cleanup (Railway has limited space)
 
-    // Clean R2 and downloaded files daily at 3 AM
-    cron.schedule("0 3 * * *", async () => {
-      await this.cleanR2Files(24); // Delete R2 files older than 24 hours
-      await this.cleanDownloadedFiles(24); // Clean local downloads
-      console.log("Daily cleanup completed (R2 + local)");
-    });
+      // Clean temp files every 15 minutes
+      cron.schedule("*/15 * * * *", () => {
+        this.cleanTempFiles(2); // 2 hours old
+        console.log("Temp cleanup completed");
+      });
 
-    // Additional R2 cleanup every 6 hours (optional - for aggressive cleanup)
-    cron.schedule("0 */6 * * *", async () => {
-      await this.cleanR2Files(24);
-      console.log("6-hour R2 cleanup completed");
-    });
+      // Clean downloads every 30 minutes (in case R2 upload failed)
+      cron.schedule("*/30 * * * *", () => {
+        this.cleanDownloadedFiles(2); // 2 hours old
+        console.log("Downloads cleanup completed");
+      });
 
-    console.log("Cleanup jobs scheduled (including R2 auto-deletion)");
+      // Clean R2 files every 6 hours
+      cron.schedule("0 */6 * * *", async () => {
+        await this.cleanR2Files(24); // 24 hours
+        console.log("R2 cleanup completed");
+      });
+
+      console.log("✓ Production cleanup jobs scheduled");
+      console.log("  - Temp: Every 15min (files >2hrs)");
+      console.log("  - Downloads: Every 30min (files >2hrs)");
+      console.log("  - R2: Every 6hrs (files >24hrs)");
+    } else {
+      // Development: Less aggressive
+
+      // Clean temp files every 30 minutes
+      cron.schedule("*/30 * * * *", () => {
+        this.cleanTempFiles(0.5); // 30 minutes old
+        console.log("Temp cleanup completed");
+      });
+
+      // Clean downloads daily at 3 AM
+      cron.schedule("0 3 * * *", async () => {
+        await this.cleanDownloadedFiles(24);
+        await this.cleanR2Files(24);
+        console.log("Daily cleanup completed");
+      });
+
+      console.log("✓ Development cleanup jobs scheduled");
+    }
   }
 
   /**
@@ -84,7 +118,6 @@ class CleanupService {
       );
       const cutoffTime = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000);
 
-      // List all objects in bucket
       const listCommand = new ListObjectsV2Command({
         Bucket: process.env.R2_BUCKET_NAME,
       });
@@ -99,7 +132,6 @@ class CleanupService {
       console.log(`Found ${list.Contents.length} files in R2 bucket`);
       let deletedCount = 0;
 
-      // Delete old files
       for (const object of list.Contents) {
         if (object.LastModified < cutoffTime) {
           try {
@@ -130,8 +162,17 @@ class CleanupService {
     }
   }
 
+  /**
+   * Clean temp files older than specified hours
+   */
   async cleanTempFiles(maxAgeHours = 1) {
     try {
+      // Check if directory exists (important for /tmp on Railway)
+      if (!(await fs.pathExists(this.tempDir))) {
+        console.log(`Temp directory doesn't exist: ${this.tempDir}`);
+        return 0;
+      }
+
       const cutoffTime = Date.now() - maxAgeHours * 60 * 60 * 1000;
       const files = await fs.readdir(this.tempDir);
       let deletedCount = 0;
@@ -147,11 +188,14 @@ class CleanupService {
             deletedCount++;
           }
         } catch (error) {
+          // File might have been deleted by another process or is in use
           console.error(`Error processing ${file}:`, error.message);
         }
       }
 
-      console.log(`Temp cleanup: ${deletedCount} files deleted`);
+      if (deletedCount > 0) {
+        console.log(`Temp cleanup: ${deletedCount} files deleted`);
+      }
       return deletedCount;
     } catch (error) {
       console.error("Temp cleanup error:", error.message);
@@ -164,6 +208,12 @@ class CleanupService {
    */
   async cleanDownloadedFiles(maxAgeHours = 24) {
     try {
+      // Check if directory exists
+      if (!(await fs.pathExists(this.downloadsDir))) {
+        console.log(`Downloads directory doesn't exist: ${this.downloadsDir}`);
+        return 0;
+      }
+
       const cutoffTime = Date.now() - maxAgeHours * 60 * 60 * 1000;
       const files = await fs.readdir(this.downloadsDir);
       let deletedCount = 0;
@@ -182,7 +232,9 @@ class CleanupService {
         }
       }
 
-      console.log(`Downloads cleanup: ${deletedCount} files deleted`);
+      if (deletedCount > 0) {
+        console.log(`Downloads cleanup: ${deletedCount} files deleted`);
+      }
       return deletedCount;
     } catch (error) {
       console.error("Downloads cleanup error:", error.message);
@@ -191,7 +243,7 @@ class CleanupService {
   }
 
   /**
-   * Delete file immediately after user downloads
+   * Delete file immediately after user downloads (optional feature)
    */
   async deleteAfterDownload(filePath, delayMinutes = 5) {
     setTimeout(async () => {
@@ -213,8 +265,8 @@ class CleanupService {
     console.log("Manual cleanup triggered...");
     const results = {
       r2: await this.cleanR2Files(24),
-      temp: await this.cleanTempFiles(1),
-      downloads: await this.cleanDownloadedFiles(24),
+      temp: await this.cleanTempFiles(this.isProduction ? 2 : 0.5),
+      downloads: await this.cleanDownloadedFiles(2),
     };
     console.log("Manual cleanup completed:", results);
     return results;
@@ -251,6 +303,7 @@ class CleanupService {
       }
 
       return {
+        environment: this.isProduction ? "production" : "development",
         local: {
           temp: tempSize,
           downloads: downloadsSize,
@@ -259,6 +312,10 @@ class CleanupService {
             temp: this.formatBytes(tempSize),
             downloads: this.formatBytes(downloadsSize),
             total: this.formatBytes(tempSize + downloadsSize),
+          },
+          paths: {
+            temp: this.tempDir,
+            downloads: this.downloadsDir,
           },
         },
         r2: {
@@ -277,8 +334,15 @@ class CleanupService {
     }
   }
 
+  /**
+   * Get directory size (with error handling for missing directories)
+   */
   async getDirectorySize(directory) {
     try {
+      if (!(await fs.pathExists(directory))) {
+        return 0;
+      }
+
       const files = await fs.readdir(directory);
       let totalSize = 0;
 
@@ -286,9 +350,11 @@ class CleanupService {
         try {
           const filePath = path.join(directory, file);
           const stats = await fs.stat(filePath);
-          totalSize += stats.size;
+          if (stats.isFile()) {
+            totalSize += stats.size;
+          }
         } catch (error) {
-          console.error(`Error getting size of ${file}:`, error.message);
+          // File might have been deleted, skip it
         }
       }
 
@@ -299,6 +365,9 @@ class CleanupService {
     }
   }
 
+  /**
+   * Format bytes to human-readable format
+   */
   formatBytes(bytes) {
     const units = ["B", "KB", "MB", "GB"];
     let size = bytes;
@@ -311,5 +380,68 @@ class CleanupService {
 
     return `${size.toFixed(2)} ${units[unitIndex]}`;
   }
+
+  /**
+   * Emergency cleanup - delete all files immediately (use with caution!)
+   */
+  async emergencyCleanup() {
+    console.warn("⚠️ EMERGENCY CLEANUP - Deleting ALL files!");
+
+    const results = {
+      temp: 0,
+      downloads: 0,
+      r2: 0,
+    };
+
+    try {
+      // Clean all temp files
+      if (await fs.pathExists(this.tempDir)) {
+        const tempFiles = await fs.readdir(this.tempDir);
+        for (const file of tempFiles) {
+          await fs.remove(path.join(this.tempDir, file)).catch(() => {});
+          results.temp++;
+        }
+      }
+
+      // Clean all downloaded files
+      if (await fs.pathExists(this.downloadsDir)) {
+        const downloadFiles = await fs.readdir(this.downloadsDir);
+        for (const file of downloadFiles) {
+          await fs.remove(path.join(this.downloadsDir, file)).catch(() => {});
+          results.downloads++;
+        }
+      }
+
+      // Clean ALL R2 files (be careful!)
+      if (this.r2Client) {
+        const list = await this.r2Client.send(
+          new ListObjectsV2Command({
+            Bucket: process.env.R2_BUCKET_NAME,
+          })
+        );
+
+        if (list.Contents) {
+          for (const object of list.Contents) {
+            await this.r2Client
+              .send(
+                new DeleteObjectCommand({
+                  Bucket: process.env.R2_BUCKET_NAME,
+                  Key: object.Key,
+                })
+              )
+              .catch(() => {});
+            results.r2++;
+          }
+        }
+      }
+
+      console.log("Emergency cleanup completed:", results);
+      return results;
+    } catch (error) {
+      console.error("Emergency cleanup error:", error.message);
+      return results;
+    }
+  }
 }
+
 module.exports = new CleanupService();
