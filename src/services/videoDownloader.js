@@ -513,10 +513,8 @@ class VideoDownloaderService {
 
   buildDownloadOptions({ quality, format, audioOnly }) {
     const options = [];
-
     // Random user agent to avoid bot detection
     options.push("--user-agent", this.getRandomUserAgent());
-
     if (audioOnly || format === "mp3") {
       options.push("-f", "bestaudio/best");
       if (format === "mp3") {
@@ -537,22 +535,21 @@ class VideoDownloaderService {
       };
       const maxHeight = heightMap[quality] || "1080";
 
-      // Better format selection - NO strict height constraints
+      // Robust format selection with fallbacks
       options.push(
         "-f",
-        `bestvideo[height<=${maxHeight}]+bestaudio/bestvideo+bestaudio/best`
+        `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`
       );
 
       if (format === "mp4") {
         options.push("--merge-output-format", "mp4");
         options.push(
           "--postprocessor-args",
-          "ffmpeg:-c:v copy -c:a aac -b:a 192k -movflags +faststart"
+          "ffmpeg:-c:v copy -c:a aac -b:a 192k"
         );
       }
     }
 
-    // CRITICAL: Anti-bot detection options
     options.push(
       "--no-playlist",
       "--no-warnings",
@@ -572,16 +569,6 @@ class VideoDownloaderService {
       "--extractor-retries",
       "10"
     );
-
-    // Platform-specific bypasses
-    if (this.isProduction) {
-      // More aggressive options for Railway
-      options.push(
-        "--extractor-args",
-        "youtube:player_client=android,web,ios",
-        "--no-cache-dir"
-      );
-    }
 
     return options;
   }
