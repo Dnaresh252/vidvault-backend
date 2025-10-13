@@ -2,10 +2,15 @@ const YTDlpWrap = require("yt-dlp-wrap").default;
 const fs = require("fs-extra");
 const path = require("path");
 const crypto = require("crypto");
+const { spawn } = require("child_process");
 
 const {
   S3Client,
   PutObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
   ListObjectsV2Command,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
@@ -25,39 +30,25 @@ class VideoDownloaderService {
   constructor() {
     this.ytDlp = new YTDlpWrap();
 
-    // Use /tmp on Railway/production
+    // Use /tmp on Railway/production, local paths in development
     const isProduction =
       process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT;
 
     if (isProduction) {
       this.downloadDir = "/tmp/downloads";
       this.tempDir = "/tmp/temp";
-      this.isProduction = true;
     } else {
       this.downloadDir = path.join(__dirname, "../../downloads");
       this.tempDir = path.join(__dirname, "../../temp");
-      this.isProduction = false;
     }
 
     this.activeDownloads = new Map();
     this.maxConcurrentDownloads = 4;
 
-    // User agent rotation for bypassing bot detection
-    this.userAgents = [
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-    ];
-
     this.ensureDirectories();
     this.testDNSResolution();
     this.initializeR2Client();
     this.startCleanupJob();
-  }
-
-  getRandomUserAgent() {
-    return this.userAgents[Math.floor(Math.random() * this.userAgents.length)];
   }
 
   async testDNSResolution() {
@@ -141,40 +132,37 @@ class VideoDownloaderService {
   }
 
   startCleanupJob() {
-    // CHANGED: 2 hour retention (was 15 min - too aggressive!)
-    const cleanupInterval = 5 * 60 * 1000; // Run every 5 minutes
-    const maxFileAge = this.isProduction ? 2 * 60 * 60 * 1000 : 30 * 60 * 1000; // 2 hours prod, 30 min dev
+    // More aggressive cleanup on Railway (every 2 minutes)
+    const cleanupInterval = process.env.RAILWAY_ENVIRONMENT
+      ? 2 * 60 * 1000
+      : 5 * 60 * 1000;
 
     setInterval(async () => {
       try {
         const now = Date.now();
 
+        // Clean both temp and downloads directories
         for (const dir of [this.tempDir, this.downloadDir]) {
           try {
-            if (!(await fs.pathExists(dir))) continue;
-
             const files = await fs.readdir(dir);
 
             for (const file of files) {
               const filePath = path.join(dir, file);
-              try {
-                const stats = await fs.stat(filePath);
-                const age = now - stats.mtimeMs;
+              const stats = await fs.stat(filePath);
+              const age = now - stats.mtimeMs;
 
-                if (age > maxFileAge) {
-                  await fs.remove(filePath);
-                  console.log(
-                    `🗑️ Cleaned up old file: ${file} (${Math.floor(
-                      age / 60000
-                    )}min old)`
-                  );
-                }
-              } catch (err) {
-                // File might be in use or already deleted
+              // Delete files older than 15 minutes on Railway, 30 minutes locally
+              const maxAge = process.env.RAILWAY_ENVIRONMENT
+                ? 15 * 60 * 1000
+                : 30 * 60 * 1000;
+
+              if (age > maxAge) {
+                await fs.remove(filePath);
+                console.log(`🗑️ Cleaned up old file: ${file}`);
               }
             }
           } catch (error) {
-            // Directory might not exist yet
+            // Directory might not exist yet, ignore
           }
         }
       } catch (error) {
@@ -182,9 +170,7 @@ class VideoDownloaderService {
       }
     }, cleanupInterval);
 
-    console.log(
-      `✓ Cleanup job started (files kept for ${maxFileAge / 60000}min)`
-    );
+    console.log(`✓ Cleanup job started (interval: ${cleanupInterval / 1000}s)`);
   }
 
   async downloadVideo(options = {}) {
@@ -237,7 +223,7 @@ class VideoDownloaderService {
         metadata = await Promise.race([
           this.getVideoMetadata(url, detection.platform),
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Metadata timeout")), 25000)
+            setTimeout(() => reject(new Error("Metadata timeout")), 20000)
           ),
         ]);
         console.log(`✓ Metadata: "${metadata.title}"`);
@@ -262,7 +248,7 @@ class VideoDownloaderService {
         }).catch(() => {});
       }
 
-      const downloadResult = await this.performDownload({
+      const downloadResult = await this.performStreamingDownload({
         url,
         quality,
         format,
@@ -303,7 +289,7 @@ class VideoDownloaderService {
           format: downloadResult.format,
           fileSize: downloadResult.fileSize,
           downloadUrl: downloadResult.downloadUrl,
-          expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(), // 2 hours
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
         },
         message: "Video downloaded successfully!",
       };
@@ -340,7 +326,7 @@ class VideoDownloaderService {
     }
   }
 
-  async performDownload(options) {
+  async performStreamingDownload(options) {
     const { url, quality, format, audioOnly, metadata, downloadId } = options;
 
     const fileName = `${this.sanitizeFilename(
@@ -348,7 +334,8 @@ class VideoDownloaderService {
     )}.${format}`;
     const contentType = this.getContentType(`.${format}`);
 
-    // Try R2 upload
+    // For now, use simple upload to R2 (not streaming) for reliability
+    // This is more stable than multipart streaming
     if (this.r2Client && this.r2Working) {
       try {
         console.log(`☁️ [${downloadId}] Downloading and uploading to R2...`);
@@ -392,35 +379,16 @@ class VideoDownloaderService {
       downloadId,
     } = options;
 
+    // Download to temp first
     const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
     const ytDlpArgs = this.buildDownloadOptions({ quality, format, audioOnly });
     ytDlpArgs.push("-o", tempFile);
 
     console.log(`⬇️ [${downloadId}] Downloading video...`);
-
-    // Add timeout to prevent hanging
-    await Promise.race([
-      this.ytDlp.execPromise([url, ...ytDlpArgs]),
-      new Promise((_, reject) =>
-        setTimeout(
-          () => reject(new Error("Download timeout after 10 minutes")),
-          600000
-        )
-      ),
-    ]);
-
-    if (!(await fs.pathExists(tempFile))) {
-      throw new Error("Download completed but file not found");
-    }
+    await this.ytDlp.execPromise([url, ...ytDlpArgs]);
 
     const stats = await fs.stat(tempFile);
     const fileSize = stats.size;
-
-    if (fileSize < 1000) {
-      await fs.remove(tempFile).catch(() => {});
-      throw new Error("Downloaded file is too small - likely failed");
-    }
-
     console.log(
       `✓ [${downloadId}] Download complete (${this.formatFileSize(fileSize)})`
     );
@@ -441,17 +409,18 @@ class VideoDownloaderService {
         ContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(
           fileName
         )}`,
-        CacheControl: "public, max-age=7200",
+        CacheControl: "public, max-age=31536000",
       })
     );
 
+    // Generate presigned URL
     const downloadUrl = await getSignedUrl(
       this.r2Client,
       new GetObjectCommand({
         Bucket: process.env.R2_BUCKET_NAME,
         Key: key,
       }),
-      { expiresIn: 7200 } // 2 hours
+      { expiresIn: 86400 }
     );
 
     // Clean up temp file
@@ -474,33 +443,15 @@ class VideoDownloaderService {
     ytDlpArgs.push("-o", tempFile);
 
     console.log(`⬇️ [${downloadId}] Downloading to temp file...`);
-
-    await Promise.race([
-      this.ytDlp.execPromise([url, ...ytDlpArgs]),
-      new Promise((_, reject) =>
-        setTimeout(
-          () => reject(new Error("Download timeout after 10 minutes")),
-          600000
-        )
-      ),
-    ]);
-
-    if (!(await fs.pathExists(tempFile))) {
-      throw new Error("Download completed but file not found");
-    }
+    await this.ytDlp.execPromise([url, ...ytDlpArgs]);
 
     const stats = await fs.stat(tempFile);
     const fileSize = stats.size;
 
-    if (fileSize < 1000) {
-      await fs.remove(tempFile).catch(() => {});
-      throw new Error("Downloaded file is too small - likely failed");
-    }
-
     const finalFileName = `${Date.now()}_${fileName}`;
     const finalPath = path.join(this.downloadDir, finalFileName);
 
-    await fs.move(tempFile, finalPath, { overwrite: true });
+    await fs.move(tempFile, finalPath);
 
     return {
       success: true,
@@ -513,8 +464,7 @@ class VideoDownloaderService {
 
   buildDownloadOptions({ quality, format, audioOnly }) {
     const options = [];
-    // Random user agent to avoid bot detection
-    options.push("--user-agent", this.getRandomUserAgent());
+
     if (audioOnly || format === "mp3") {
       options.push("-f", "bestaudio/best");
       if (format === "mp3") {
@@ -555,19 +505,12 @@ class VideoDownloaderService {
       "--no-warnings",
       "--no-check-certificates",
       "--socket-timeout",
-      "45",
+      "30",
       "--retries",
-      "15",
+      "10",
       "--fragment-retries",
-      "15",
-      "--concurrent-fragments",
-      "3",
-      "--throttled-rate",
-      "100K",
-      "--sleep-requests",
-      "1",
-      "--extractor-retries",
-      "10"
+      "10",
+      "--hls-prefer-native"
     );
 
     return options;
@@ -575,7 +518,6 @@ class VideoDownloaderService {
 
   getUserFriendlyError(errorMessage) {
     const errorMap = {
-      bot: "This video requires verification. Please try again in a few moments.",
       private: "This video is private and cannot be downloaded.",
       unavailable: "This video is no longer available.",
       removed: "This video has been removed.",
@@ -585,7 +527,6 @@ class VideoDownloaderService {
       "geo-restricted": "This video is not available in your region.",
       timeout: "Download timed out. Please try a lower quality.",
       "members-only": "This video is only available to channel members.",
-      "too small": "Download failed. Please try again.",
     };
 
     const lowerError = errorMessage.toLowerCase();
@@ -595,7 +536,7 @@ class VideoDownloaderService {
       }
     }
 
-    return "Download failed. The video may be temporarily unavailable. Please try again.";
+    return "Download failed. The video may be restricted or unavailable.";
   }
 
   async createDownloadRecord(options) {
@@ -639,19 +580,14 @@ class VideoDownloaderService {
         "--no-playlist",
         "--skip-download",
         "--socket-timeout",
-        "25",
+        "20",
         "--no-warnings",
         "--no-check-certificates",
-        "--user-agent",
-        this.getRandomUserAgent(),
       ];
 
-      // Platform-specific options
+      // Add platform-specific options
       if (platform === "youtube") {
-        options.push(
-          "--extractor-args",
-          "youtube:player_client=android,web,ios"
-        );
+        options.push("--extractor-args", "youtube:player_client=android,web");
       }
 
       const result = await this.ytDlp.execPromise([url, ...options]);
@@ -670,8 +606,10 @@ class VideoDownloaderService {
         } catch (e) {}
       }
 
+      // Get best thumbnail
       let thumbnail = null;
       if (metadata.thumbnails && metadata.thumbnails.length > 0) {
+        // Get highest quality thumbnail
         const thumbnails = metadata.thumbnails.sort(
           (a, b) => (b.width || 0) - (a.width || 0)
         );
