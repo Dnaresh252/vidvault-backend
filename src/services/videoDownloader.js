@@ -43,7 +43,7 @@ class VideoDownloaderService {
     }
 
     this.activeDownloads = new Map();
-    this.maxConcurrentDownloads = 4;
+    this.maxConcurrentDownloads = 8;
 
     this.ensureDirectories();
     this.testDNSResolution();
@@ -134,7 +134,7 @@ class VideoDownloaderService {
   startCleanupJob() {
     // More aggressive cleanup on Railway (every 2 minutes)
     const cleanupInterval = process.env.RAILWAY_ENVIRONMENT
-      ? 2 * 60 * 1000
+      ? 5 * 60 * 1000
       : 5 * 60 * 1000;
 
     setInterval(async () => {
@@ -485,7 +485,6 @@ class VideoDownloaderService {
       };
       const maxHeight = heightMap[quality] || "1080";
 
-      // Robust format selection with fallbacks
       options.push(
         "-f",
         `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`
@@ -500,6 +499,7 @@ class VideoDownloaderService {
       }
     }
 
+    // ⚡ CRITICAL FIX: YouTube bot bypass
     options.push(
       "--no-playlist",
       "--no-warnings",
@@ -510,7 +510,13 @@ class VideoDownloaderService {
       "10",
       "--fragment-retries",
       "10",
-      "--hls-prefer-native"
+      "--hls-prefer-native",
+
+      // 🔥 NEW: Bypass YouTube bot detection
+      "--extractor-args",
+      "youtube:player_client=android,ios,web",
+      "--user-agent",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     );
 
     return options;
@@ -527,6 +533,16 @@ class VideoDownloaderService {
       "geo-restricted": "This video is not available in your region.",
       timeout: "Download timed out. Please try a lower quality.",
       "members-only": "This video is only available to channel members.",
+
+      // 🔥 NEW: Bot detection & photo errors
+      "sign in to confirm":
+        "YouTube is blocking downloads temporarily. Please try again in a few minutes or use a different video.",
+      "not a bot": "YouTube bot detection triggered. Please try again later.",
+      "no video in this post":
+        "This is a photo/image post, not a video. Only videos can be downloaded.",
+      "unsupported url":
+        "This URL type is not supported. Please make sure it's a video link.",
+      403: "Access forbidden. The video may be restricted or the server IP is blocked.",
     };
 
     const lowerError = errorMessage.toLowerCase();
@@ -536,7 +552,7 @@ class VideoDownloaderService {
       }
     }
 
-    return "Download failed. The video may be restricted or unavailable.";
+    return "Download failed. The video may be restricted or unavailable. Please try a different video.";
   }
 
   async createDownloadRecord(options) {

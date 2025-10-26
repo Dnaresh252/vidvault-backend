@@ -1,7 +1,5 @@
-# Use Node 20 slim as base
 FROM node:20-slim
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -11,25 +9,22 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp globally (Python package)
-RUN pip3 install --break-system-packages --no-cache-dir yt-dlp
+# Install LATEST yt-dlp (CRITICAL FIX)
+RUN pip3 install --break-system-packages --no-cache-dir -U yt-dlp
 
-# Create app directory
+# Update yt-dlp to latest nightly build (EXTRA PROTECTION)
+RUN pip3 install --break-system-packages --no-cache-dir -U --pre yt-dlp
+
 WORKDIR /app
 
-# Copy package files first and install dependencies
 COPY package*.json ./
 RUN npm ci --only=production
 
-# Copy the rest of the app
 COPY . .
 
-# Expose the port your app will run on
 EXPOSE 5000
 
-# Use a non-root user for security
 RUN useradd -m appuser
 USER appuser
 
-# Start the server
 CMD ["node", "server.js"]
