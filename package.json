@@ -6,9 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "postinstall": "echo '🔄 Updating yt-dlp...' && python3 -m pip install --break-system-packages --upgrade --force-reinstall yt-dlp || pip3 install --upgrade --force-reinstall yt-dlp || echo '⚠ yt-dlp update skipped (will use system version)'",
-    "build": "echo 'Build complete'",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "postinstall": "python3 -m pip install --break-system-packages --upgrade --no-cache-dir yt-dlp 2>/dev/null || pip3 install --upgrade --no-cache-dir yt-dlp 2>/dev/null || echo '⚠ yt-dlp update skipped'",
+    "build": "echo 'Build complete'"
   },
   "keywords": [
     "video",
