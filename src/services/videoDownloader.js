@@ -352,9 +352,6 @@ class VideoDownloaderService {
         return result;
       } catch (r2Error) {
         console.warn(`⚠ [${downloadId}] R2 upload failed:`, r2Error.message);
-        console.warn(
-          `↩️ [${downloadId}] Falling back to local storage this time`
-        );
       }
     }
 
