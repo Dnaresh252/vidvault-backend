@@ -2,49 +2,64 @@ const YTDlpWrap = require("yt-dlp-wrap").default;
 const fs = require("fs-extra");
 const path = require("path");
 const crypto = require("crypto");
+const { spawn } = require("child_process");
+
 const {
   S3Client,
   PutObjectCommand,
-  GetObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
   ListObjectsV2Command,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const { GetObjectCommand } = require("@aws-sdk/client-s3");
+
 const https = require("https");
+const dns = require("dns");
+const { Resolver } = require("dns").promises;
 const platformDetector = require("./platformDetector");
 const Download = require("../models/Download");
+
+dns.setServers(["8.8.8.8", "1.1.1.1"]);
+const resolver = new Resolver();
+resolver.setServers(["8.8.8.8", "1.1.1.1"]);
 
 class VideoDownloaderService {
   constructor() {
     this.ytDlp = new YTDlpWrap();
 
+    // Use /tmp on Railway/production, local paths in development
     const isProduction =
       process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT;
-    this.downloadDir = isProduction
-      ? "/tmp/downloads"
-      : path.join(__dirname, "../../downloads");
-    this.tempDir = isProduction
-      ? "/tmp/temp"
-      : path.join(__dirname, "../../temp");
-    this.cookiesFile = path.join(this.tempDir, "cookies.txt");
+
+    if (isProduction) {
+      this.downloadDir = "/tmp/downloads";
+      this.tempDir = "/tmp/temp";
+    } else {
+      this.downloadDir = path.join(__dirname, "../../downloads");
+      this.tempDir = path.join(__dirname, "../../temp");
+    }
 
     this.activeDownloads = new Map();
-    this.maxConcurrentDownloads = 8;
+    this.maxConcurrentDownloads = 4;
 
     this.ensureDirectories();
+    this.testDNSResolution();
     this.initializeR2Client();
     this.startCleanupJob();
-    this.setupCookies();
   }
 
-  async setupCookies() {
-    // Create empty cookies file if it doesn't exist
+  async testDNSResolution() {
+    if (!process.env.R2_ACCOUNT_ID) return;
+    const hostname = `${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
     try {
-      if (!(await fs.pathExists(this.cookiesFile))) {
-        await fs.writeFile(this.cookiesFile, "# Netscape HTTP Cookie File\n");
-        console.log("✓ Cookies file created");
-      }
+      const addresses = await resolver.resolve4(hostname);
+      this.r2IP = addresses[0];
+      console.log(`✓ R2 DNS resolved: ${this.r2IP}`);
     } catch (error) {
-      console.warn("⚠ Could not create cookies file:", error.message);
+      this.r2IP = "172.64.66.1";
     }
   }
 
@@ -57,12 +72,25 @@ class VideoDownloaderService {
     }
 
     try {
+      const httpsAgent = new https.Agent({
+        keepAlive: true,
+        maxSockets: 50,
+        timeout: 60000,
+        rejectUnauthorized: true,
+      });
+
       this.r2Client = new S3Client({
         region: "auto",
         endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
         credentials: {
           accessKeyId: process.env.R2_ACCESS_KEY_ID,
           secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+        },
+        forcePathStyle: true,
+        requestHandler: {
+          httpsAgent: httpsAgent,
+          requestTimeout: 120000,
+          connectionTimeout: 30000,
         },
       });
 
@@ -87,7 +115,7 @@ class VideoDownloaderService {
         })
       );
       return true;
-    } catch {
+    } catch (error) {
       return false;
     }
   }
@@ -104,31 +132,41 @@ class VideoDownloaderService {
   }
 
   startCleanupJob() {
-    const cleanupInterval = 5 * 60 * 1000; // 5 minutes
+    // More aggressive cleanup on Railway (every 2 minutes)
+    const cleanupInterval = process.env.RAILWAY_ENVIRONMENT
+      ? 2 * 60 * 1000
+      : 5 * 60 * 1000;
 
     setInterval(async () => {
       try {
         const now = Date.now();
-        const maxAge = 15 * 60 * 1000; // 15 minutes
 
+        // Clean both temp and downloads directories
         for (const dir of [this.tempDir, this.downloadDir]) {
           try {
             const files = await fs.readdir(dir);
-            for (const file of files) {
-              if (file === "cookies.txt") continue; // Don't delete cookies
 
+            for (const file of files) {
               const filePath = path.join(dir, file);
               const stats = await fs.stat(filePath);
+              const age = now - stats.mtimeMs;
 
-              if (now - stats.mtimeMs > maxAge) {
+              // Delete files older than 15 minutes on Railway, 30 minutes locally
+              const maxAge = process.env.RAILWAY_ENVIRONMENT
+                ? 15 * 60 * 1000
+                : 30 * 60 * 1000;
+
+              if (age > maxAge) {
                 await fs.remove(filePath);
-                console.log(`🗑️ Cleaned up: ${file}`);
+                console.log(`🗑️ Cleaned up old file: ${file}`);
               }
             }
-          } catch {}
+          } catch (error) {
+            // Directory might not exist yet, ignore
+          }
         }
       } catch (error) {
-        console.error("Cleanup error:", error.message);
+        console.error("Cleanup job error:", error.message);
       }
     }, cleanupInterval);
 
@@ -141,8 +179,8 @@ class VideoDownloaderService {
       quality = "high",
       format = "mp4",
       audioOnly = false,
-      userIP,
-      userAgent,
+      userIP = null,
+      userAgent = null,
     } = options;
 
     if (this.activeDownloads.size >= this.maxConcurrentDownloads) {
@@ -155,15 +193,19 @@ class VideoDownloaderService {
 
     const downloadId = crypto.randomBytes(8).toString("hex");
     let downloadRecord = null;
-    const startTime = Date.now();
+    const downloadStartTime = Date.now();
 
     try {
       const detection = platformDetector.detectPlatform(url);
-      if (!detection.success) throw new Error(detection.error);
+      if (!detection.success) {
+        throw new Error(detection.error);
+      }
 
       console.log(
-        `\n📥 [${downloadId}] ${detection.platformName} download starting`
+        `\n📥 [${downloadId}] Starting download from ${detection.platformName}`
       );
+      console.log(`⚙️ Quality: ${quality}, Format: ${format}`);
+
       this.activeDownloads.set(downloadId, { startTime: Date.now(), url });
 
       downloadRecord = await this.createDownloadRecord({
@@ -177,14 +219,25 @@ class VideoDownloaderService {
 
       let metadata;
       try {
+        console.log("📋 Extracting metadata...");
         metadata = await Promise.race([
           this.getVideoMetadata(url, detection.platform),
           new Promise((_, reject) =>
             setTimeout(() => reject(new Error("Metadata timeout")), 20000)
           ),
         ]);
-      } catch {
-        metadata = { title: "Video", duration: 0, uploader: "Unknown" };
+        console.log(`✓ Metadata: "${metadata.title}"`);
+      } catch (metaError) {
+        console.log("⚠ Metadata extraction failed, using defaults");
+        metadata = {
+          title: "Video",
+          description: "",
+          thumbnail: null,
+          duration: 0,
+          view_count: 0,
+          upload_date: null,
+          uploader: "Unknown",
+        };
       }
 
       if (downloadRecord && metadata.title !== "Video") {
@@ -205,8 +258,13 @@ class VideoDownloaderService {
         downloadId,
       });
 
-      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-      console.log(`✓ [${downloadId}] Completed in ${duration}s`);
+      const downloadDuration = (
+        (Date.now() - downloadStartTime) /
+        1000
+      ).toFixed(2);
+      console.log(
+        `✓ [${downloadId}] Download completed in ${downloadDuration}s`
+      );
 
       if (downloadRecord) {
         await this.updateDownloadRecord(downloadRecord, {
@@ -236,14 +294,24 @@ class VideoDownloaderService {
         message: "Video downloaded successfully!",
       };
     } catch (error) {
-      console.error(`✗ [${downloadId}] Failed:`, error.message);
+      const downloadDuration = (
+        (Date.now() - downloadStartTime) /
+        1000
+      ).toFixed(2);
+      console.error(
+        `✗ [${downloadId}] Failed after ${downloadDuration}s:`,
+        error.message
+      );
 
-      const userMessage = this.getUserFriendlyError(error.message);
+      let userMessage = this.getUserFriendlyError(error.message);
 
       if (downloadRecord) {
         await this.updateDownloadRecord(downloadRecord, {
           status: "failed",
-          error: { message: userMessage, code: error.code || "DOWNLOAD_ERROR" },
+          error: {
+            message: userMessage,
+            code: error.code || "DOWNLOAD_ERROR",
+          },
           processingEndTime: new Date(),
         }).catch(() => {});
       }
@@ -260,11 +328,14 @@ class VideoDownloaderService {
 
   async performStreamingDownload(options) {
     const { url, quality, format, audioOnly, metadata, downloadId } = options;
+
     const fileName = `${this.sanitizeFilename(
       metadata?.title || "video"
     )}.${format}`;
     const contentType = this.getContentType(`.${format}`);
 
+    // For now, use simple upload to R2 (not streaming) for reliability
+    // This is more stable than multipart streaming
     if (this.r2Client && this.r2Working) {
       try {
         console.log(`☁️ [${downloadId}] Downloading and uploading to R2...`);
@@ -284,6 +355,7 @@ class VideoDownloaderService {
       }
     }
 
+    // Fallback: Local download
     console.log(`💾 [${downloadId}] Using local storage fallback`);
     return await this.performLocalDownload({
       url,
@@ -306,6 +378,7 @@ class VideoDownloaderService {
       downloadId,
     } = options;
 
+    // Download to temp first
     const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
     const ytDlpArgs = this.buildDownloadOptions({ quality, format, audioOnly });
     ytDlpArgs.push("-o", tempFile);
@@ -316,9 +389,10 @@ class VideoDownloaderService {
     const stats = await fs.stat(tempFile);
     const fileSize = stats.size;
     console.log(
-      `✓ [${downloadId}] Downloaded (${this.formatFileSize(fileSize)})`
+      `✓ [${downloadId}] Download complete (${this.formatFileSize(fileSize)})`
     );
 
+    // Upload to R2
     console.log(`☁️ [${downloadId}] Uploading to R2...`);
     const fileContent = await fs.readFile(tempFile);
     const key = `downloads/${Date.now()}_${crypto
@@ -338,15 +412,26 @@ class VideoDownloaderService {
       })
     );
 
+    // Generate presigned URL
     const downloadUrl = await getSignedUrl(
       this.r2Client,
-      new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key }),
+      new GetObjectCommand({
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: key,
+      }),
       { expiresIn: 86400 }
     );
 
+    // Clean up temp file
     await fs.remove(tempFile).catch(() => {});
 
-    return { success: true, downloadUrl, fileSize, quality, format };
+    return {
+      success: true,
+      downloadUrl,
+      fileSize,
+      quality,
+      format,
+    };
   }
 
   async performLocalDownload(options) {
@@ -364,6 +449,7 @@ class VideoDownloaderService {
 
     const finalFileName = `${Date.now()}_${fileName}`;
     const finalPath = path.join(this.downloadDir, finalFileName);
+
     await fs.move(tempFile, finalPath);
 
     return {
@@ -397,6 +483,8 @@ class VideoDownloaderService {
         low: "480",
       };
       const maxHeight = heightMap[quality] || "1080";
+
+      // Robust format selection with fallbacks
       options.push(
         "-f",
         `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`
@@ -411,11 +499,9 @@ class VideoDownloaderService {
       }
     }
 
-    // 🔥 CRITICAL BOT BYPASS OPTIONS
     options.push(
       "--no-playlist",
       "--no-warnings",
-      "--quiet",
       "--no-check-certificates",
       "--socket-timeout",
       "30",
@@ -423,96 +509,30 @@ class VideoDownloaderService {
       "10",
       "--fragment-retries",
       "10",
-
-      // Multiple player clients for better success rate
-      "--extractor-args",
-      "youtube:player_client=android_creator,android,ios,web",
-
-      // Realistic user agent
-      "--user-agent",
-      "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-
-      // Use cookies if available
-      "--cookies",
-      this.cookiesFile,
-
-      // Additional bypass options
-      "--add-header",
-      "Accept-Language:en-US,en;q=0.9",
-      "--add-header",
-      "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+      "--hls-prefer-native"
     );
 
     return options;
   }
 
-  async getVideoMetadata(url, platform) {
-    try {
-      const options = [
-        "--dump-json",
-        "--no-playlist",
-        "--skip-download",
-        "--socket-timeout",
-        "20",
-        "--no-warnings",
-        "--no-check-certificates",
-        "--cookies",
-        this.cookiesFile,
-      ];
-
-      if (platform === "youtube") {
-        options.push(
-          "--extractor-args",
-          "youtube:player_client=android_creator,web"
-        );
-      }
-
-      const result = await this.ytDlp.execPromise([url, ...options]);
-      const metadata = JSON.parse(result);
-
-      let thumbnail = null;
-      if (metadata.thumbnails && metadata.thumbnails.length > 0) {
-        const thumbnails = metadata.thumbnails.sort(
-          (a, b) => (b.width || 0) - (a.width || 0)
-        );
-        thumbnail = thumbnails[0].url;
-      } else if (metadata.thumbnail) {
-        thumbnail = metadata.thumbnail;
-      }
-
-      return {
-        title: metadata.title || "Unknown Title",
-        description: (metadata.description || "").substring(0, 2000),
-        thumbnail,
-        duration: metadata.duration || 0,
-        view_count: metadata.view_count || 0,
-        uploader: metadata.uploader || "Unknown",
-        uploader_id: metadata.uploader_id || "",
-        uploader_verified: metadata.uploader_verified || false,
-      };
-    } catch (error) {
-      console.error("Metadata extraction error:", error.message);
-      throw error;
-    }
-  }
-
   getUserFriendlyError(errorMessage) {
     const errorMap = {
-      "sign in to confirm":
-        "YouTube bot detection. Try again in a few minutes or use a different video.",
-      "not a bot":
-        "YouTube bot detection triggered. Please try a different video.",
-      "private video": "This video is private and cannot be downloaded.",
+      private: "This video is private and cannot be downloaded.",
       unavailable: "This video is no longer available.",
       removed: "This video has been removed.",
-      "no video": "This post contains only photos, not a video.",
-      403: "Access forbidden. The video may be restricted.",
+      "age-restricted":
+        "This video is age-restricted and cannot be downloaded.",
+      copyright: "This video is protected by copyright.",
+      "geo-restricted": "This video is not available in your region.",
+      timeout: "Download timed out. Please try a lower quality.",
       "members-only": "This video is only available to channel members.",
     };
 
     const lowerError = errorMessage.toLowerCase();
     for (const [key, message] of Object.entries(errorMap)) {
-      if (lowerError.includes(key.toLowerCase())) return message;
+      if (lowerError.includes(key.toLowerCase())) {
+        return message;
+      }
     }
 
     return "Download failed. The video may be restricted or unavailable.";
@@ -532,11 +552,12 @@ class VideoDownloaderService {
         ipAddress: userIP
           ? crypto.createHash("sha256").update(userIP).digest("hex")
           : null,
-        userAgent,
+        userAgent: userAgent,
       });
       await downloadRecord.save();
       return downloadRecord;
     } catch (error) {
+      console.error("Error creating download record:", error);
       return null;
     }
   }
@@ -546,7 +567,72 @@ class VideoDownloaderService {
       if (!record) return;
       Object.assign(record, updates);
       await record.save();
-    } catch {}
+    } catch (error) {
+      console.error("Error updating download record:", error.message);
+    }
+  }
+
+  async getVideoMetadata(url, platform) {
+    try {
+      const options = [
+        "--dump-json",
+        "--no-playlist",
+        "--skip-download",
+        "--socket-timeout",
+        "20",
+        "--no-warnings",
+        "--no-check-certificates",
+      ];
+
+      // Add platform-specific options
+      if (platform === "youtube") {
+        options.push("--extractor-args", "youtube:player_client=android,web");
+      }
+
+      const result = await this.ytDlp.execPromise([url, ...options]);
+      const metadata = JSON.parse(result);
+
+      let uploadDate = null;
+      if (metadata.upload_date) {
+        try {
+          const dateStr = metadata.upload_date.toString();
+          if (dateStr.length === 8) {
+            const year = parseInt(dateStr.substring(0, 4));
+            const month = parseInt(dateStr.substring(4, 6)) - 1;
+            const day = parseInt(dateStr.substring(6, 8));
+            uploadDate = new Date(year, month, day);
+          }
+        } catch (e) {}
+      }
+
+      // Get best thumbnail
+      let thumbnail = null;
+      if (metadata.thumbnails && metadata.thumbnails.length > 0) {
+        // Get highest quality thumbnail
+        const thumbnails = metadata.thumbnails.sort(
+          (a, b) => (b.width || 0) - (a.width || 0)
+        );
+        thumbnail = thumbnails[0].url;
+      } else if (metadata.thumbnail) {
+        thumbnail = metadata.thumbnail;
+      }
+
+      return {
+        title: metadata.title || "Unknown Title",
+        description: (metadata.description || "").substring(0, 2000),
+        thumbnail: thumbnail,
+        duration: metadata.duration || 0,
+        view_count: metadata.view_count || 0,
+        upload_date: uploadDate,
+        uploader: metadata.uploader || "Unknown",
+        uploader_id: metadata.uploader_id || "",
+        uploader_verified: metadata.uploader_verified || false,
+        webpage_url: metadata.webpage_url || url,
+      };
+    } catch (error) {
+      console.error("Metadata extraction error:", error.message);
+      throw error;
+    }
   }
 
   validateDownloadRequest(options) {
@@ -558,12 +644,18 @@ class VideoDownloaderService {
 
     const validQualities = ["highest", "high", "medium", "low"];
     if (quality && !validQualities.includes(quality)) {
-      return { valid: false, error: `Invalid quality: ${quality}` };
+      return {
+        valid: false,
+        error: `Invalid quality. Must be one of: ${validQualities.join(", ")}`,
+      };
     }
 
     const validFormats = ["mp4", "mp3", "webm"];
     if (format && !validFormats.includes(format)) {
-      return { valid: false, error: `Invalid format: ${format}` };
+      return {
+        valid: false,
+        error: `Invalid format. Must be one of: ${validFormats.join(", ")}`,
+      };
     }
 
     return { valid: true, detection };
@@ -574,6 +666,8 @@ class VideoDownloaderService {
       ".mp4": "video/mp4",
       ".mp3": "audio/mpeg",
       ".webm": "video/webm",
+      ".m4a": "audio/mp4",
+      ".mkv": "video/x-matroska",
     };
     return types[ext.toLowerCase()] || "application/octet-stream";
   }
@@ -584,6 +678,7 @@ class VideoDownloaderService {
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
       .replace(/\s+/g, "_")
       .replace(/_+/g, "_")
+      .replace(/^_|_$/g, "")
       .substring(0, 150)
       .toLowerCase();
   }
@@ -591,12 +686,12 @@ class VideoDownloaderService {
   formatFileSize(bytes) {
     const units = ["B", "KB", "MB", "GB"];
     let size = bytes;
-    let i = 0;
-    while (size >= 1024 && i < 3) {
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
       size /= 1024;
-      i++;
+      unitIndex++;
     }
-    return `${size.toFixed(2)} ${units[i]}`;
+    return `${size.toFixed(2)} ${units[unitIndex]}`;
   }
 
   getSupportedPlatforms() {
@@ -608,6 +703,7 @@ class VideoDownloaderService {
       activeDownloads: this.activeDownloads.size,
       maxConcurrent: this.maxConcurrentDownloads,
       r2Status: this.r2Working ? "operational" : "degraded",
+      uptime: process.uptime(),
     };
   }
 }
