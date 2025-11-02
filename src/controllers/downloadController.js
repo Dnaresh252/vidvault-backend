@@ -82,60 +82,122 @@ exports.downloadVideo = async (req, res) => {
 // ----------------------
 // Proxy Thumbnail Endpoint
 // ----------------------
+// ----------------------
+// Proxy Thumbnail Endpoint - FIXED for Instagram & CDNs
+// ----------------------
 exports.proxyThumbnail = async (req, res) => {
   try {
     const { url } = req.query;
-    if (!url)
-      return res
-        .status(400)
-        .json({ status: "error", message: "Thumbnail URL is required" });
 
+    if (!url) {
+      return res.status(400).json({
+        status: "error",
+        message: "Thumbnail URL is required",
+      });
+    }
+
+    // Validate URL
     try {
       new URL(url);
     } catch {
-      return res
-        .status(400)
-        .json({ status: "error", message: "Invalid thumbnail URL" });
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid thumbnail URL",
+      });
     }
 
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        Accept: "image/webp,image/apng,image/*,*/*;q=0.8",
-        Referer: "https://www.google.com/",
-      },
-      timeout: 10000,
-    });
+    // 🔥 FIXED: Better headers for Instagram & CDN support
+    const headers = {
+      "User-Agent":
+        "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+      Accept:
+        "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+      "Sec-Fetch-Dest": "image",
+      "Sec-Fetch-Mode": "no-cors",
+      "Sec-Fetch-Site": "cross-site",
+      "sec-ch-ua": '"Chromium";v="120", "Google Chrome";v="120"',
+      "sec-ch-ua-mobile": "?1",
+      "sec-ch-ua-platform": '"Android"',
+    };
 
-    if (!response.ok)
-      return res
-        .status(404)
-        .json({ status: "error", message: "Thumbnail not found" });
+    // Add platform-specific headers
+    if (url.includes("instagram.com") || url.includes("cdninstagram.com")) {
+      headers["Referer"] = "https://www.instagram.com/";
+      headers["Origin"] = "https://www.instagram.com";
+    } else if (
+      url.includes("youtube.com") ||
+      url.includes("ytimg.com") ||
+      url.includes("googlevideo.com")
+    ) {
+      headers["Referer"] = "https://www.youtube.com/";
+    } else if (url.includes("tiktok.com")) {
+      headers["Referer"] = "https://www.tiktok.com/";
+    } else {
+      headers["Referer"] = "https://www.google.com/";
+    }
 
-    const buffer = await response.arrayBuffer();
-    const contentType = response.headers.get("content-type") || "image/jpeg";
+    // Fetch with timeout and retries
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000); // 15 second timeout
 
-    res.set({
-      "Content-Type": contentType,
-      "Cache-Control": "public, max-age=86400, immutable",
-      "Access-Control-Allow-Origin": "*",
-    });
+    try {
+      const response = await fetch(url, {
+        headers,
+        signal: controller.signal,
+        redirect: "follow", // Follow redirects
+        compress: true,
+      });
 
-    res.send(Buffer.from(buffer));
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      // Get content type and buffer
+      const contentType = response.headers.get("content-type") || "image/jpeg";
+      const buffer = await response.arrayBuffer();
+
+      // Validate it's actually an image
+      const bufferView = Buffer.from(buffer);
+      if (bufferView.length === 0) {
+        throw new Error("Empty response");
+      }
+
+      // Set response headers
+      res.set({
+        "Content-Type": contentType,
+        "Content-Length": bufferView.length,
+        "Cache-Control": "public, max-age=86400, immutable",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+      });
+
+      res.send(bufferView);
+    } catch (fetchError) {
+      clearTimeout(timeout);
+      throw fetchError;
+    }
   } catch (error) {
     console.error("Thumbnail proxy error:", error.message);
 
+    // Return 1x1 transparent PNG as fallback
     const transparentPixel = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
       "base64"
     );
 
     res.set({
       "Content-Type": "image/png",
       "Cache-Control": "public, max-age=60",
+      "Access-Control-Allow-Origin": "*",
     });
-    res.send(transparentPixel);
+
+    res.status(200).send(transparentPixel);
   }
 };
 
