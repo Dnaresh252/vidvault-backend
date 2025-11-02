@@ -356,7 +356,7 @@ class VideoDownloaderService {
     }
 
     // Fallback: Local download
-    console.log(`💾 [${downloadId}] Using local storage fallback`);
+    console.log(`[${downloadId}] Using local storage fallback`);
     return await this.performLocalDownload({
       url,
       quality,
