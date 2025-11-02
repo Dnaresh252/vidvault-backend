@@ -484,7 +484,6 @@ class VideoDownloaderService {
       };
       const maxHeight = heightMap[quality] || "1080";
 
-      // Robust format selection with fallbacks
       options.push(
         "-f",
         `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`
@@ -509,7 +508,11 @@ class VideoDownloaderService {
       "10",
       "--fragment-retries",
       "10",
-      "--hls-prefer-native"
+      "--hls-prefer-native",
+      "--extractor-args",
+      "youtube:player_client=android",
+      "--user-agent",
+      "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip"
     );
 
     return options;
@@ -584,9 +587,9 @@ class VideoDownloaderService {
         "--no-check-certificates",
       ];
 
-      // Add platform-specific options
+      // FIXED: Use android client only
       if (platform === "youtube") {
-        options.push("--extractor-args", "youtube:player_client=android,web");
+        options.push("--extractor-args", "youtube:player_client=android");
       }
 
       const result = await this.ytDlp.execPromise([url, ...options]);
@@ -605,10 +608,8 @@ class VideoDownloaderService {
         } catch (e) {}
       }
 
-      // Get best thumbnail
       let thumbnail = null;
       if (metadata.thumbnails && metadata.thumbnails.length > 0) {
-        // Get highest quality thumbnail
         const thumbnails = metadata.thumbnails.sort(
           (a, b) => (b.width || 0) - (a.width || 0)
         );
