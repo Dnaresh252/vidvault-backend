@@ -356,7 +356,7 @@ class VideoDownloaderService {
     }
 
     // Fallback: Local download
-    console.log(`[${downloadId}] Using local storage fallback`);
+    console.log(`💾 [${downloadId}] Using local storage fallback`);
     return await this.performLocalDownload({
       url,
       quality,
@@ -484,6 +484,7 @@ class VideoDownloaderService {
       };
       const maxHeight = heightMap[quality] || "1080";
 
+      // Robust format selection with fallbacks
       options.push(
         "-f",
         `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`
@@ -508,11 +509,7 @@ class VideoDownloaderService {
       "10",
       "--fragment-retries",
       "10",
-      "--hls-prefer-native",
-      "--extractor-args",
-      "youtube:player_client=android",
-      "--user-agent",
-      "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip"
+      "--hls-prefer-native"
     );
 
     return options;
@@ -587,9 +584,9 @@ class VideoDownloaderService {
         "--no-check-certificates",
       ];
 
-      // FIXED: Use android client only
+      // Add platform-specific options
       if (platform === "youtube") {
-        options.push("--extractor-args", "youtube:player_client=android");
+        options.push("--extractor-args", "youtube:player_client=android,web");
       }
 
       const result = await this.ytDlp.execPromise([url, ...options]);
@@ -608,8 +605,10 @@ class VideoDownloaderService {
         } catch (e) {}
       }
 
+      // Get best thumbnail
       let thumbnail = null;
       if (metadata.thumbnails && metadata.thumbnails.length > 0) {
+        // Get highest quality thumbnail
         const thumbnails = metadata.thumbnails.sort(
           (a, b) => (b.width || 0) - (a.width || 0)
         );
