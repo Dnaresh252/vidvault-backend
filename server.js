@@ -4,7 +4,6 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 const compression = require("compression");
 require("dotenv").config();
-const transcriptRoutes = require("./src/routes/transcriptRoutes");
 
 const requiredEnvVars = [
   "MONGODB_URI",
@@ -109,7 +108,7 @@ app.use("/api/v1", apiLimiter);
 
 // API routes
 app.use("/api/v1/download", require("./src/routes/download"));
-app.use("/api/v1", transcriptRoutes);
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error("Error:", err);
