@@ -502,7 +502,8 @@ class VideoDownloaderService {
     options.push(
       "--no-playlist",
       "--no-warnings",
-      "--no-check-certificates",
+      "--user-agent",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "--socket-timeout",
       "30",
       "--retries",
@@ -511,7 +512,6 @@ class VideoDownloaderService {
       "10",
       "--hls-prefer-native"
     );
-
     return options;
   }
 
@@ -581,13 +581,11 @@ class VideoDownloaderService {
         "--socket-timeout",
         "20",
         "--no-warnings",
-        "--no-check-certificates",
+        "--user-agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       ];
 
       // Add platform-specific options
-      if (platform === "youtube") {
-        options.push("--extractor-args", "youtube:player_client=android,web");
-      }
 
       const result = await this.ytDlp.execPromise([url, ...options]);
       const metadata = JSON.parse(result);

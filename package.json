@@ -40,6 +40,7 @@
     "node-fetch": "^2.7.0",
     "uuid": "^9.0.0",
     "validator": "^13.11.0",
+    "youtube-transcript": "^1.2.1",
     "yt-dlp-wrap": "^2.3.0"
   },
   "devDependencies": {
