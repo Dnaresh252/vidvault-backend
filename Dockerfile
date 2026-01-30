@@ -51,4 +51,4 @@ USER node
 # 🚀 Expose and start
 # -------------------------------
 EXPOSE 5000
-CMD ["node", "server.js"]
+CMD ["node", "./start.sh"]
