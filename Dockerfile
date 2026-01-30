@@ -51,4 +51,5 @@ USER node
 # 🚀 Expose and start
 # -------------------------------
 EXPOSE 5000
-CMD ["node", "./start.sh"]
+CMD ["sh", "-c", "./start.sh"]
+
