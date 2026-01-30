@@ -1,55 +1,47 @@
-# -------------------------------
-# ✅ Base image
-# -------------------------------
+
 FROM node:20-slim
 
-# -------------------------------
-# 🧩 Install dependencies
-# -------------------------------
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
     ffmpeg \
-    curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # -------------------------------
-# 🧠 Set up Python virtual env + yt-dlp
+# Python venv + yt-dlp
 # -------------------------------
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 RUN pip install --no-cache-dir --upgrade pip yt-dlp
-RUN yt-dlp --version
 
 # -------------------------------
-# 📦 Setup working directory
+# App setup
 # -------------------------------
 WORKDIR /app
 
-# Copy package files and install Node dependencies
 COPY package*.json ./
 RUN npm ci --only=production
 
-# Copy app source
 COPY . .
 
 # -------------------------------
-# 🗂 Create temp directories
+# FIX PERMISSIONS (CRITICAL)
 # -------------------------------
-RUN mkdir -p /tmp/downloads /tmp/temp && \
+RUN chmod +x /app/start.sh && \
+    mkdir -p /tmp/downloads /tmp/temp && \
     chmod 777 /tmp/downloads /tmp/temp
 
 # -------------------------------
-# 👤 Use built-in 'node' user instead of creating new one
+# Run as node user
 # -------------------------------
 USER node
 
-# -------------------------------
-# 🚀 Expose and start
-# -------------------------------
 EXPOSE 5000
-CMD ["sh", "-c", "./start.sh"]
 
+# -------------------------------
+# START USING SHELL (NOT NODE)
+# -------------------------------
+CMD ["sh", "-c", "./start.sh"]
