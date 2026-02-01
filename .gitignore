@@ -7,3 +7,5 @@ temp/
 *.log
 npm-debug.log*
 .DS_Store
+cookies/
+*.txt

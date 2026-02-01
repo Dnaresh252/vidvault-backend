@@ -188,7 +188,7 @@ exports.proxyThumbnail = async (req, res) => {
     // Return 1x1 transparent PNG as fallback
     const transparentPixel = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
-      "base64"
+      "base64",
     );
 
     res.set({
@@ -221,7 +221,7 @@ exports.getVideoMetadata = async (req, res) => {
     const metadata = await Promise.race([
       videoDownloader.getVideoMetadata(url.trim(), detection.platform),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Metadata fetch timeout")), 25000)
+        setTimeout(() => reject(new Error("Metadata fetch timeout")), 25000),
       ),
     ]);
 
@@ -247,7 +247,7 @@ exports.getVideoMetadata = async (req, res) => {
         downloadOptions: {
           availableFormats: detection.availableFormats,
           qualityOptions: platformDetector.getQualityOptions(
-            detection.platform
+            detection.platform,
           ),
           recommendedQuality: "high",
           recommendedFormat: "mp4",
@@ -367,7 +367,7 @@ exports.serveFile = async (req, res) => {
         "Content-Type": contentType,
         "Content-Length": fileSize,
         "Content-Disposition": `attachment; filename*=UTF-8''${sanitizeFilenameForDownload(
-          decodedFilename
+          decodedFilename,
         )}`,
         "Cache-Control": "private, no-cache",
         "Access-Control-Allow-Origin": "*",

@@ -96,7 +96,7 @@ class VideoDownloaderService {
 
       this.r2Working = await this.testR2Connection();
       console.log(
-        this.r2Working ? "✓ R2 connection working" : "✗ R2 connection failed"
+        this.r2Working ? "✓ R2 connection working" : "✗ R2 connection failed",
       );
     } catch (error) {
       console.error("R2 initialization error:", error.message);
@@ -112,7 +112,7 @@ class VideoDownloaderService {
         new ListObjectsV2Command({
           Bucket: process.env.R2_BUCKET_NAME,
           MaxKeys: 1,
-        })
+        }),
       );
       return true;
     } catch (error) {
@@ -202,7 +202,7 @@ class VideoDownloaderService {
       }
 
       console.log(
-        `\n📥 [${downloadId}] Starting download from ${detection.platformName}`
+        `\n📥 [${downloadId}] Starting download from ${detection.platformName}`,
       );
       console.log(`⚙️ Quality: ${quality}, Format: ${format}`);
 
@@ -223,7 +223,7 @@ class VideoDownloaderService {
         metadata = await Promise.race([
           this.getVideoMetadata(url, detection.platform),
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Metadata timeout")), 20000)
+            setTimeout(() => reject(new Error("Metadata timeout")), 20000),
           ),
         ]);
         console.log(`✓ Metadata: "${metadata.title}"`);
@@ -263,7 +263,7 @@ class VideoDownloaderService {
         1000
       ).toFixed(2);
       console.log(
-        `✓ [${downloadId}] Download completed in ${downloadDuration}s`
+        `✓ [${downloadId}] Download completed in ${downloadDuration}s`,
       );
 
       if (downloadRecord) {
@@ -300,7 +300,7 @@ class VideoDownloaderService {
       ).toFixed(2);
       console.error(
         `✗ [${downloadId}] Failed after ${downloadDuration}s:`,
-        error.message
+        error.message,
       );
 
       let userMessage = this.getUserFriendlyError(error.message);
@@ -330,7 +330,7 @@ class VideoDownloaderService {
     const { url, quality, format, audioOnly, metadata, downloadId } = options;
 
     const fileName = `${this.sanitizeFilename(
-      metadata?.title || "video"
+      metadata?.title || "video",
     )}.${format}`;
     const contentType = this.getContentType(`.${format}`);
 
@@ -389,7 +389,7 @@ class VideoDownloaderService {
     const stats = await fs.stat(tempFile);
     const fileSize = stats.size;
     console.log(
-      `✓ [${downloadId}] Download complete (${this.formatFileSize(fileSize)})`
+      `✓ [${downloadId}] Download complete (${this.formatFileSize(fileSize)})`,
     );
 
     // Upload to R2
@@ -406,10 +406,10 @@ class VideoDownloaderService {
         Body: fileContent,
         ContentType: contentType,
         ContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(
-          fileName
+          fileName,
         )}`,
         CacheControl: "public, max-age=31536000",
-      })
+      }),
     );
 
     // Generate presigned URL
@@ -419,7 +419,7 @@ class VideoDownloaderService {
         Bucket: process.env.R2_BUCKET_NAME,
         Key: key,
       }),
-      { expiresIn: 86400 }
+      { expiresIn: 86400 },
     );
 
     // Clean up temp file
@@ -472,7 +472,7 @@ class VideoDownloaderService {
           "--audio-format",
           "mp3",
           "--audio-quality",
-          "0"
+          "0",
         );
       }
     } else {
@@ -487,14 +487,14 @@ class VideoDownloaderService {
       // Robust format selection with fallbacks
       options.push(
         "-f",
-        `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`
+        `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`,
       );
 
       if (format === "mp4") {
         options.push("--merge-output-format", "mp4");
         options.push(
           "--postprocessor-args",
-          "ffmpeg:-c:v copy -c:a aac -b:a 192k"
+          "ffmpeg:-c:v copy -c:a aac -b:a 192k",
         );
       }
     }
@@ -510,7 +510,7 @@ class VideoDownloaderService {
       "10",
       "--fragment-retries",
       "10",
-      "--hls-prefer-native"
+      "--hls-prefer-native",
     );
     return options;
   }
@@ -608,7 +608,7 @@ class VideoDownloaderService {
       if (metadata.thumbnails && metadata.thumbnails.length > 0) {
         // Get highest quality thumbnail
         const thumbnails = metadata.thumbnails.sort(
-          (a, b) => (b.width || 0) - (a.width || 0)
+          (a, b) => (b.width || 0) - (a.width || 0),
         );
         thumbnail = thumbnails[0].url;
       } else if (metadata.thumbnail) {

@@ -1,4 +1,4 @@
-node_modules
+node_modules/
 npm-debug.log
 .env
 .git
@@ -6,3 +6,4 @@ npm-debug.log
 temp/
 downloads/
 *.log
+

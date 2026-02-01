@@ -19,7 +19,7 @@ const requiredEnvVars = [
 const missingVars = requiredEnvVars.filter((varName) => !process.env[varName]);
 if (missingVars.length > 0) {
   console.error(
-    `❌ Missing required environment variables: ${missingVars.join(", ")}`
+    `❌ Missing required environment variables: ${missingVars.join(", ")}`,
   );
   console.error("Please check your .env file");
   process.exit(1);
@@ -47,7 +47,7 @@ app.use(
         imgSrc: ["'self'", "data:", "https:"],
       },
     },
-  })
+  }),
 );
 
 // CORS configuration
@@ -67,7 +67,7 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  })
+  }),
 );
 
 // Compression and parsing
