@@ -24,10 +24,17 @@ router.post("/metadata", downloadController.getVideoMetadata);
 
 // Thumbnail proxy - CORS fix (light rate limiting)
 router.get("/thumbnail", downloadController.proxyThumbnail);
+// 🆕 NEW: Get thumbnail URL only (no download)
+router.post("/thumbnail-url", apiLimiter, downloadController.getThumbnailUrl);
 
 // Main download route (strict rate limiting)
 router.post("/video", downloadLimiter, downloadController.downloadVideo);
-
+// Thumbnail-only download endpoint
+router.post(
+  "/thumbnail-only",
+  apiLimiter,
+  downloadController.downloadThumbnailOnly,
+);
 // File serving (no additional rate limiting - already protected by filename validation)
 router.get("/file/:filename", downloadController.serveFile);
 
@@ -41,6 +48,7 @@ router.use((req, res) => {
       "GET /platforms": "List supported platforms",
       "POST /metadata": "Get video metadata",
       "POST /video": "Download video",
+      "POST /thumbnail-url": "Get thumbnail URL only",
       "GET /file/:filename": "Retrieve downloaded file",
       "GET /thumbnail": "Proxy thumbnail image",
     },

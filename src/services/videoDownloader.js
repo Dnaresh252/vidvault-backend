@@ -173,6 +173,158 @@ class VideoDownloaderService {
     console.log(`✓ Cleanup job started (interval: ${cleanupInterval / 1000}s)`);
   }
 
+  // async downloadVideo(options = {}) {
+  //   const {
+  //     url,
+  //     quality = "high",
+  //     format = "mp4",
+  //     audioOnly = false,
+  //     userIP = null,
+  //     userAgent = null,
+  //   } = options;
+
+  //   if (this.activeDownloads.size >= this.maxConcurrentDownloads) {
+  //     return {
+  //       success: false,
+  //       error: "Server is at capacity. Please try again in a moment.",
+  //       code: "SERVER_BUSY",
+  //     };
+  //   }
+
+  //   const downloadId = crypto.randomBytes(8).toString("hex");
+  //   let downloadRecord = null;
+  //   const downloadStartTime = Date.now();
+
+  //   try {
+  //     const detection = platformDetector.detectPlatform(url);
+  //     if (!detection.success) {
+  //       throw new Error(detection.error);
+  //     }
+
+  //     console.log(
+  //       `\n📥 [${downloadId}] Starting download from ${detection.platformName}`,
+  //     );
+  //     console.log(`⚙️ Quality: ${quality}, Format: ${format}`);
+
+  //     this.activeDownloads.set(downloadId, { startTime: Date.now(), url });
+
+  //     downloadRecord = await this.createDownloadRecord({
+  //       url,
+  //       detection,
+  //       quality,
+  //       format,
+  //       userIP,
+  //       userAgent,
+  //     });
+
+  //     let metadata;
+  //     try {
+  //       console.log("📋 Extracting metadata...");
+  //       metadata = await Promise.race([
+  //         this.getVideoMetadata(url, detection.platform),
+  //         new Promise((_, reject) =>
+  //           setTimeout(() => reject(new Error("Metadata timeout")), 20000),
+  //         ),
+  //       ]);
+  //       console.log(`✓ Metadata: "${metadata.title}"`);
+  //     } catch (metaError) {
+  //       console.log("⚠ Metadata extraction failed, using defaults");
+  //       metadata = {
+  //         title: "Video",
+  //         description: "",
+  //         thumbnail: null,
+  //         duration: 0,
+  //         view_count: 0,
+  //         upload_date: null,
+  //         uploader: "Unknown",
+  //       };
+  //     }
+
+  //     if (downloadRecord && metadata.title !== "Video") {
+  //       await this.updateDownloadRecord(downloadRecord, {
+  //         title: metadata.title,
+  //         thumbnail: metadata.thumbnail,
+  //         duration: metadata.duration,
+  //       }).catch(() => {});
+  //     }
+
+  //     const downloadResult = await this.performStreamingDownload({
+  //       url,
+  //       quality,
+  //       format,
+  //       audioOnly,
+  //       detection,
+  //       metadata,
+  //       downloadId,
+  //     });
+
+  //     const downloadDuration = (
+  //       (Date.now() - downloadStartTime) /
+  //       1000
+  //     ).toFixed(2);
+  //     console.log(
+  //       `✓ [${downloadId}] Download completed in ${downloadDuration}s`,
+  //     );
+
+  //     if (downloadRecord) {
+  //       await this.updateDownloadRecord(downloadRecord, {
+  //         status: "completed",
+  //         actualQuality: downloadResult.quality,
+  //         actualFormat: downloadResult.format,
+  //         fileSize: downloadResult.fileSize,
+  //         downloadUrl: downloadResult.downloadUrl,
+  //         processingEndTime: new Date(),
+  //       }).catch(() => {});
+  //     }
+
+  //     return {
+  //       success: true,
+  //       data: {
+  //         id: downloadRecord?._id,
+  //         title: metadata.title,
+  //         thumbnail: metadata.thumbnail,
+  //         duration: metadata.duration,
+  //         platform: detection.platformName,
+  //         quality: downloadResult.quality,
+  //         format: downloadResult.format,
+  //         fileSize: downloadResult.fileSize,
+  //         downloadUrl: downloadResult.downloadUrl,
+  //         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  //       },
+  //       message: "Video downloaded successfully!",
+  //     };
+  //   } catch (error) {
+  //     const downloadDuration = (
+  //       (Date.now() - downloadStartTime) /
+  //       1000
+  //     ).toFixed(2);
+  //     console.error(
+  //       `✗ [${downloadId}] Failed after ${downloadDuration}s:`,
+  //       error.message,
+  //     );
+
+  //     let userMessage = this.getUserFriendlyError(error.message);
+
+  //     if (downloadRecord) {
+  //       await this.updateDownloadRecord(downloadRecord, {
+  //         status: "failed",
+  //         error: {
+  //           message: userMessage,
+  //           code: error.code || "DOWNLOAD_ERROR",
+  //         },
+  //         processingEndTime: new Date(),
+  //       }).catch(() => {});
+  //     }
+
+  //     return {
+  //       success: false,
+  //       error: userMessage,
+  //       code: error.code || "DOWNLOAD_ERROR",
+  //     };
+  //   } finally {
+  //     this.activeDownloads.delete(downloadId);
+  //   }
+  // }
   async downloadVideo(options = {}) {
     const {
       url,
@@ -181,6 +333,7 @@ class VideoDownloaderService {
       audioOnly = false,
       userIP = null,
       userAgent = null,
+      includeThumbnail = false, // 🆕 NEW parameter
     } = options;
 
     if (this.activeDownloads.size >= this.maxConcurrentDownloads) {
@@ -204,7 +357,9 @@ class VideoDownloaderService {
       console.log(
         `\n📥 [${downloadId}] Starting download from ${detection.platformName}`,
       );
-      console.log(`⚙️ Quality: ${quality}, Format: ${format}`);
+      console.log(
+        `⚙️ Quality: ${quality}, Format: ${format}, Thumbnail: ${includeThumbnail ? "YES" : "NO"}`,
+      );
 
       this.activeDownloads.set(downloadId, { startTime: Date.now(), url });
 
@@ -277,21 +432,36 @@ class VideoDownloaderService {
         }).catch(() => {});
       }
 
+      // 🆕 BUILD RESPONSE BASED ON includeThumbnail
+      const responseData = {
+        id: downloadRecord?._id,
+        title: metadata.title,
+        thumbnail: metadata.thumbnail, // Always include thumbnail URL
+        duration: metadata.duration,
+        platform: detection.platformName,
+        quality: downloadResult.quality,
+        format: downloadResult.format,
+        fileSize: downloadResult.fileSize,
+        downloadUrl: downloadResult.downloadUrl,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      };
+
+      // 🆕 If user wants thumbnail download link, add proxy URL
+      if (includeThumbnail && metadata.thumbnail) {
+        responseData.thumbnailDownload = {
+          url: `/api/v1/download/thumbnail?url=${encodeURIComponent(metadata.thumbnail)}`,
+          format: "jpg",
+          note: "Right-click and 'Save As' to download thumbnail",
+        };
+        console.log(`✓ [${downloadId}] Thumbnail URL included in response`);
+      }
+
       return {
         success: true,
-        data: {
-          id: downloadRecord?._id,
-          title: metadata.title,
-          thumbnail: metadata.thumbnail,
-          duration: metadata.duration,
-          platform: detection.platformName,
-          quality: downloadResult.quality,
-          format: downloadResult.format,
-          fileSize: downloadResult.fileSize,
-          downloadUrl: downloadResult.downloadUrl,
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        },
-        message: "Video downloaded successfully!",
+        data: responseData,
+        message: includeThumbnail
+          ? "Video ready! Thumbnail URL included."
+          : "Video downloaded successfully!",
       };
     } catch (error) {
       const downloadDuration = (

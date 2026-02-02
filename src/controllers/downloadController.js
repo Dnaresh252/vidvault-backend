@@ -7,6 +7,80 @@ const fetch = require("node-fetch");
 // ----------------------
 // Download Video
 // ----------------------
+// exports.downloadVideo = async (req, res) => {
+//   try {
+//     const {
+//       url,
+//       quality = "high",
+//       format = "mp4",
+//       audioOnly = false,
+//     } = req.body;
+
+//     if (!url?.trim()) {
+//       return res
+//         .status(400)
+//         .json({ status: "error", message: "Valid URL is required" });
+//     }
+
+//     const validation = videoDownloader.validateDownloadRequest({
+//       url: url.trim(),
+//       quality,
+//       format,
+//     });
+//     if (!validation.valid) {
+//       return res
+//         .status(400)
+//         .json({ status: "error", message: validation.error });
+//     }
+
+//     const userIP = req.ip || req.connection.remoteAddress;
+//     const userAgent = req.get("User-Agent");
+
+//     const stats = videoDownloader.getServerStats();
+//     if (stats.activeDownloads >= stats.maxConcurrent) {
+//       return res.status(503).json({
+//         status: "error",
+//         message:
+//           "Server is processing maximum downloads. Please try again in a moment.",
+//         retryAfter: 30,
+//       });
+//     }
+
+//     const downloadResult = await videoDownloader.downloadVideo({
+//       url: url.trim(),
+//       quality,
+//       format,
+//       audioOnly,
+//       userIP,
+//       userAgent,
+//     });
+
+//     if (!downloadResult.success) {
+//       return res.status(400).json({
+//         status: "error",
+//         message: downloadResult.error,
+//         code: downloadResult.code,
+//       });
+//     }
+
+//     res.status(200).json({
+//       status: "success",
+//       message: downloadResult.message,
+//       data: downloadResult.data,
+//     });
+//   } catch (error) {
+//     console.error("❌ Download controller error:", error);
+//     res.status(500).json({
+//       status: "error",
+//       message: "An unexpected error occurred. Please try again.",
+//       details:
+//         process.env.NODE_ENV === "development" ? error.message : undefined,
+//     });
+//   }
+// };
+// ----------------------
+// Download Video (DEFAULT - Video Only)
+// ----------------------
 exports.downloadVideo = async (req, res) => {
   try {
     const {
@@ -14,6 +88,7 @@ exports.downloadVideo = async (req, res) => {
       quality = "high",
       format = "mp4",
       audioOnly = false,
+      includeThumbnail = false, // 🆕 NEW: Optional parameter (default FALSE)
     } = req.body;
 
     if (!url?.trim()) {
@@ -46,6 +121,10 @@ exports.downloadVideo = async (req, res) => {
       });
     }
 
+    console.log(
+      `📥 Download request - Video: YES, Thumbnail: ${includeThumbnail ? "YES" : "NO"}`,
+    );
+
     const downloadResult = await videoDownloader.downloadVideo({
       url: url.trim(),
       quality,
@@ -53,6 +132,7 @@ exports.downloadVideo = async (req, res) => {
       audioOnly,
       userIP,
       userAgent,
+      includeThumbnail, // 🆕 Pass this to service
     });
 
     if (!downloadResult.success) {
@@ -78,7 +158,127 @@ exports.downloadVideo = async (req, res) => {
     });
   }
 };
+// ----------------------
+// Download Thumbnail ONLY - NEW FEATURE
+// ----------------------
+exports.downloadThumbnailOnly = async (req, res) => {
+  try {
+    const { url } = req.body;
 
+    if (!url?.trim()) {
+      return res.status(400).json({
+        status: "error",
+        message: "Valid URL is required",
+      });
+    }
+
+    console.log(`🖼️ Thumbnail-only download request: ${url}`);
+
+    // Detect platform
+    const detection = platformDetector.detectPlatform(url.trim());
+    if (!detection.success) {
+      return res.status(400).json({
+        status: "error",
+        message: detection.error,
+      });
+    }
+
+    // Get metadata (which includes thumbnail)
+    const metadata = await videoDownloader.getVideoMetadata(
+      url.trim(),
+      detection.platform,
+    );
+
+    if (!metadata.thumbnail) {
+      return res.status(404).json({
+        status: "error",
+        message: "No thumbnail available for this video",
+      });
+    }
+
+    // Return thumbnail info (will be downloaded via proxy)
+    res.status(200).json({
+      status: "success",
+      message: "Thumbnail ready for download!",
+      data: {
+        title: metadata.title,
+        thumbnail: metadata.thumbnail,
+        thumbnailDownload: {
+          url: `/api/v1/download/thumbnail?url=${encodeURIComponent(metadata.thumbnail)}`,
+          format: "jpg",
+        },
+        platform: detection.platformName,
+        duration: metadata.duration,
+        fileSize: 0, // Thumbnails are small
+      },
+    });
+  } catch (error) {
+    console.error("❌ Thumbnail-only download error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to get thumbnail. Please try again.",
+    });
+  }
+};
+// ----------------------
+// Get Thumbnail URL (Direct Proxy - NO STORAGE)
+// ----------------------
+exports.getThumbnailUrl = async (req, res) => {
+  try {
+    const { url } = req.body;
+
+    if (!url?.trim()) {
+      return res.status(400).json({
+        status: "error",
+        message: "Valid URL is required",
+      });
+    }
+
+    console.log(`🖼️ Thumbnail URL request: ${url}`);
+
+    // Detect platform and get metadata
+    const detection = platformDetector.detectPlatform(url.trim());
+    if (!detection.success) {
+      return res.status(400).json({
+        status: "error",
+        message: detection.error,
+      });
+    }
+
+    // Get video metadata (includes thumbnail)
+    const metadata = await videoDownloader.getVideoMetadata(
+      url.trim(),
+      detection.platform,
+    );
+
+    if (!metadata.thumbnail) {
+      return res.status(404).json({
+        status: "error",
+        message: "No thumbnail available for this video",
+      });
+    }
+
+    // ✅ RETURN PROXIED URL (served through our backend)
+    // This way we avoid CORS issues and external blocking
+    const proxyUrl = `/api/v1/download/thumbnail?url=${encodeURIComponent(metadata.thumbnail)}`;
+
+    res.status(200).json({
+      status: "success",
+      data: {
+        title: metadata.title,
+        thumbnailUrl: metadata.thumbnail, // Original URL
+        proxyUrl: proxyUrl, // Our proxied URL (CORS-safe)
+        platform: detection.platformName,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Thumbnail URL error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to get thumbnail URL. Please try again.",
+    });
+  }
+};
 // ----------------------
 // Proxy Thumbnail Endpoint
 // ----------------------
