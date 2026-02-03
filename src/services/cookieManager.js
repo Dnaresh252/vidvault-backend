@@ -1,19 +1,15 @@
 const fs = require("fs-extra");
 const path = require("path");
-const https = require("https");
 
 class CookieManager {
   constructor() {
-    // Use /tmp in production for Railway (unless volume mounted)
     const isProduction =
       process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT;
 
-    // 🆕 RAILWAY VOLUME SUPPORT
     if (
       process.env.RAILWAY_ENVIRONMENT &&
       process.env.RAILWAY_VOLUME_MOUNT_PATH
     ) {
-      // If Railway volume is mounted, use it
       this.cookieDir = process.env.RAILWAY_VOLUME_MOUNT_PATH;
       console.log(`📦 Using Railway volume: ${this.cookieDir}`);
     } else if (isProduction) {
@@ -28,6 +24,8 @@ class CookieManager {
     this.lastRefresh = null;
     this.refreshInterval = 6 * 60 * 60 * 1000; // 6 hours
     this.cookieValid = false;
+    // ── track whether a LIVE test has ever passed ──
+    this.liveValidated = false;
 
     this.initialize();
   }
@@ -36,12 +34,10 @@ class CookieManager {
     try {
       await fs.ensureDir(this.cookieDir);
 
-      // 🆕 PRIORITY 1: Check environment variable (RAILWAY METHOD)
+      // Priority 1 – env var
       if (process.env.YOUTUBE_COOKIES) {
         console.log("📦 Found cookies in environment variable");
-
         try {
-          // Write environment cookies to file
           await fs.writeFile(
             this.cookieFile,
             process.env.YOUTUBE_COOKIES,
@@ -49,15 +45,13 @@ class CookieManager {
           );
           console.log("✓ YouTube cookies loaded from environment variable");
 
-          // Validate the cookies
-          const isValid = await this.validateCookies();
-
-          if (isValid) {
+          const formatOk = await this.validateCookieFormat();
+          if (formatOk) {
             console.log("✓ Environment cookies validated successfully");
             this.cookieValid = true;
             this.lastRefresh = Date.now();
           } else {
-            console.log("⚠️  Environment cookies failed validation");
+            console.log("⚠️  Environment cookies failed format validation");
             this.cookieValid = false;
           }
 
@@ -68,19 +62,18 @@ class CookieManager {
             "❌ Failed to write environment cookies:",
             error.message,
           );
-          // Continue to check file system
         }
       }
 
-      // PRIORITY 2: Check if cookies exist in file system
-      const hasManualCookies = await fs.pathExists(this.cookieFile);
-      const hasBrowserCookies = await fs.pathExists(this.browserCookieFile);
+      // Priority 2 – file system
+      const hasManual = await fs.pathExists(this.cookieFile);
+      const hasBrowser = await fs.pathExists(this.browserCookieFile);
 
-      if (hasManualCookies) {
+      if (hasManual) {
         console.log("✓ YouTube cookies found (file)");
         this.cookieValid = true;
         this.lastRefresh = Date.now();
-      } else if (hasBrowserCookies) {
+      } else if (hasBrowser) {
         console.log("✓ YouTube cookies found (browser export)");
         this.cookieValid = true;
         this.lastRefresh = Date.now();
@@ -91,13 +84,9 @@ class CookieManager {
           "   1. Add YOUTUBE_COOKIES environment variable in Railway",
         );
         console.log("   2. Upload youtube_cookies.txt to:", this.cookieDir);
-        console.log(
-          "📖 Guide: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp",
-        );
         this.cookieValid = false;
       }
 
-      // Start periodic validation
       this.startCookieValidation();
     } catch (error) {
       console.error("❌ Cookie initialization error:", error.message);
@@ -105,49 +94,9 @@ class CookieManager {
     }
   }
 
-  /**
-   * Get cookie file path for yt-dlp
-   * Returns null if no valid cookies available
-   */
-  getCookieFile() {
-    // Try manual cookies first (Netscape format)
-    if (fs.existsSync(this.cookieFile)) {
-      return this.cookieFile;
-    }
-
-    // Try browser export cookies
-    if (fs.existsSync(this.browserCookieFile)) {
-      return this.browserCookieFile;
-    }
-
-    return null;
-  }
-
-  /**
-   * Add cookie file to yt-dlp options array
-   */
-  addCookieOptions(optionsArray) {
-    const cookieFile = this.getCookieFile();
-
-    if (cookieFile) {
-      optionsArray.push("--cookies", cookieFile);
-      console.log(`🍪 Using cookies: ${path.basename(cookieFile)}`);
-      return true;
-    } else {
-      console.log(
-        "⚠️  No cookies available - proceeding without authentication",
-      );
-      console.log(
-        "💡 To fix: Add YOUTUBE_COOKIES environment variable in Railway",
-      );
-      return false;
-    }
-  }
-
-  /**
-   * Validate cookies are still working
-   */
-  async validateCookies() {
+  // ─── FORMAT-ONLY CHECK (fast, offline) ────────────────────────────
+  // Previously called validateCookies — renamed so callers are explicit.
+  async validateCookieFormat() {
     const cookieFile = this.getCookieFile();
     if (!cookieFile) {
       this.cookieValid = false;
@@ -156,25 +105,35 @@ class CookieManager {
 
     try {
       const content = await fs.readFile(cookieFile, "utf-8");
-
-      // Check if file has content
       if (!content || content.trim().length < 50) {
         console.log("⚠️  Cookie file exists but appears empty");
         this.cookieValid = false;
         return false;
       }
 
-      // Check for Netscape format header
-      const isNetscapeFormat = content.includes("# Netscape HTTP Cookie File");
+      // Must mention youtube.com at all
+      if (!content.includes("youtube.com")) {
+        console.log("⚠️  Cookie file missing youtube.com domain");
+        this.cookieValid = false;
+        return false;
+      }
 
-      // Check for essential YouTube cookies
-      const hasEssentialCookies =
-        content.includes("youtube.com") &&
-        (content.includes("CONSENT") || content.includes("VISITOR_INFO"));
+      // Must have at least one of the auth-level cookies that prove a logged-in session
+      const hasAuth =
+        content.includes("__Secure-1PSID") ||
+        content.includes("__Secure-3PSID") ||
+        content.includes("SID");
 
-      if (!hasEssentialCookies) {
-        console.log("⚠️  Cookie file missing essential YouTube cookies");
-        console.log("💡 Required cookies: CONSENT, VISITOR_INFO1_LIVE");
+      if (!hasAuth) {
+        console.log(
+          "⚠️  Cookie file missing auth cookies (__Secure-1PSID / __Secure-3PSID / SID)",
+        );
+        console.log(
+          "💡 These cookies only exist when you are LOGGED IN to YouTube",
+        );
+        console.log(
+          "   → Export cookies WHILE logged in, then update YOUTUBE_COOKIES in Railway",
+        );
         this.cookieValid = false;
         return false;
       }
@@ -183,24 +142,42 @@ class CookieManager {
       this.lastRefresh = Date.now();
       return true;
     } catch (error) {
-      console.error("Cookie validation error:", error.message);
+      console.error("Cookie format validation error:", error.message);
       this.cookieValid = false;
       return false;
     }
   }
 
-  /**
-   * Periodic cookie validation
-   */
-  startCookieValidation() {
-    // Validate immediately
-    this.validateCookies();
+  // ─── BACKWARD COMPAT alias ───────────────────────────────────────
+  async validateCookies() {
+    return this.validateCookieFormat();
+  }
 
-    // Then validate every hour
+  // ─── FILE PATH HELPERS ────────────────────────────────────────────
+  getCookieFile() {
+    if (fs.existsSync(this.cookieFile)) return this.cookieFile;
+    if (fs.existsSync(this.browserCookieFile)) return this.browserCookieFile;
+    return null;
+  }
+
+  addCookieOptions(optionsArray) {
+    const cookieFile = this.getCookieFile();
+    if (cookieFile) {
+      optionsArray.push("--cookies", cookieFile);
+      console.log(`🍪 Using cookies: ${path.basename(cookieFile)}`);
+      return true;
+    }
+    console.log("⚠️  No cookies available - proceeding without authentication");
+    return false;
+  }
+
+  // ─── PERIODIC VALIDATION ──────────────────────────────────────────
+  startCookieValidation() {
+    this.validateCookieFormat();
+
     setInterval(
       async () => {
-        const isValid = await this.validateCookies();
-
+        const isValid = await this.validateCookieFormat();
         if (!isValid && this.getCookieFile()) {
           console.log(
             "⚠️  Cookie validation failed - cookies may need refresh",
@@ -209,8 +186,6 @@ class CookieManager {
             "💡 Update YOUTUBE_COOKIES environment variable in Railway",
           );
         }
-
-        // Check if cookies need refresh (> 6 hours old)
         if (
           this.lastRefresh &&
           Date.now() - this.lastRefresh > this.refreshInterval
@@ -224,66 +199,52 @@ class CookieManager {
         }
       },
       60 * 60 * 1000,
-    ); // Check every hour
+    );
   }
 
-  /**
-   * Manual cookie update from string (for admin panel or API)
-   */
+  // ─── MANUAL UPDATE ────────────────────────────────────────────────
   async updateCookiesFromString(cookieContent, format = "netscape") {
     try {
       const targetFile =
         format === "netscape" ? this.cookieFile : this.browserCookieFile;
-
-      // Validate format
       if (
         format === "netscape" &&
         !cookieContent.includes("# Netscape HTTP Cookie File")
       ) {
-        // Add header if missing
         cookieContent = "# Netscape HTTP Cookie File\n" + cookieContent;
       }
-
       await fs.writeFile(targetFile, cookieContent, "utf-8");
       console.log(`✓ Cookies updated successfully (${format})`);
-
-      // Validate new cookies
-      const isValid = await this.validateCookies();
-
+      const isValid = await this.validateCookieFormat();
       return {
         success: true,
         valid: isValid,
         message: isValid
           ? "Cookies updated and validated"
-          : "Cookies updated but validation failed - check cookie format",
+          : "Cookies updated but validation failed",
       };
     } catch (error) {
       console.error("Cookie update error:", error.message);
-      return {
-        success: false,
-        error: error.message,
-      };
+      return { success: false, error: error.message };
     }
   }
 
-  /**
-   * Get cookie status for monitoring
-   */
+  // ─── STATUS ───────────────────────────────────────────────────────
   getStatus() {
     const cookieFile = this.getCookieFile();
     const ageHours = this.lastRefresh
       ? ((Date.now() - this.lastRefresh) / (1000 * 60 * 60)).toFixed(1)
       : null;
-
     return {
       hasCookies: cookieFile !== null,
       cookieFile: cookieFile ? path.basename(cookieFile) : null,
       cookieSource: process.env.YOUTUBE_COOKIES ? "environment" : "file",
       valid: this.cookieValid,
+      liveValidated: this.liveValidated,
       lastRefresh: this.lastRefresh
         ? new Date(this.lastRefresh).toISOString()
         : null,
-      ageHours: ageHours,
+      ageHours,
       needsRefresh: this.lastRefresh
         ? Date.now() - this.lastRefresh > this.refreshInterval
         : true,
@@ -291,9 +252,6 @@ class CookieManager {
     };
   }
 
-  /**
-   * Instructions for getting cookies
-   */
   static getInstructions() {
     return {
       railway: {
@@ -321,57 +279,41 @@ class CookieManager {
         ],
       },
       method2: {
-        title: "Using yt-dlp Command (Advanced)",
+        title:
+          "Using yt-dlp Command (Advanced) — RUN ON YOUR OWN MACHINE, NOT RAILWAY",
         steps: [
-          "1. Login to YouTube in Chrome/Firefox",
-          "2. Run: yt-dlp --cookies-from-browser chrome --cookies youtube_cookies.txt https://youtube.com",
-          "3. Railway: Add file content to YOUTUBE_COOKIES env variable",
-          "4. Local: Copy file to cookies/ folder",
+          "1. Install yt-dlp on YOUR laptop/desktop: https://github.com/yt-dlp/yt-dlp/releases",
+          "2. Login to YouTube in Chrome/Firefox on that same machine",
+          "3. Open terminal ON THAT MACHINE and run:",
+          "   yt-dlp --cookies-from-browser chrome --cookies youtube_cookies.txt https://youtube.com",
+          "4. This creates youtube_cookies.txt in your current folder",
+          "5. Open that file, copy ALL content",
+          "6. Go to Railway → Variables → Update YOUTUBE_COOKIES",
         ],
-      },
-      format: {
-        title: "Cookie File Format (Netscape)",
-        example: `# Netscape HTTP Cookie File
-.youtube.com\tTRUE\t/\tTRUE\t0\tCONSENT\tYES+
-.youtube.com\tTRUE\t/\tFALSE\t0\tVISITOR_INFO1_LIVE\txxx
-.youtube.com\tTRUE\t/\tTRUE\t0\tSID\txxx`,
       },
     };
   }
 
-  /**
-   * 🆕 Refresh cookies from environment variable (for periodic updates)
-   */
   async refreshFromEnvironment() {
-    if (!process.env.YOUTUBE_COOKIES) {
+    if (!process.env.YOUTUBE_COOKIES)
       return {
         success: false,
         message: "No YOUTUBE_COOKIES environment variable found",
       };
-    }
-
     try {
       await fs.writeFile(this.cookieFile, process.env.YOUTUBE_COOKIES, "utf-8");
-      const isValid = await this.validateCookies();
-
+      const isValid = await this.validateCookieFormat();
       if (isValid) {
         console.log("✓ Cookies refreshed from environment variable");
         this.lastRefresh = Date.now();
-        return {
-          success: true,
-          message: "Cookies refreshed and validated",
-        };
-      } else {
-        return {
-          success: false,
-          message: "Cookies refreshed but validation failed",
-        };
+        return { success: true, message: "Cookies refreshed and validated" };
       }
-    } catch (error) {
       return {
         success: false,
-        message: error.message,
+        message: "Cookies refreshed but validation failed",
       };
+    } catch (error) {
+      return { success: false, message: error.message };
     }
   }
 }
