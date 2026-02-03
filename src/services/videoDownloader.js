@@ -1541,7 +1541,7 @@ class VideoDownloaderService {
   }
 
   getServerStats() {
-    const cookieStatus = cookieManager.getStatus(); // 🆕 Include cookie status
+    const cookieStatus = cookieManager.getStatus();
     return {
       activeDownloads: this.activeDownloads.size,
       maxConcurrent: this.maxConcurrentDownloads,
