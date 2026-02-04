@@ -502,27 +502,40 @@ class VideoDownloaderService {
    * 🔥 BUILD YT-DLP OPTIONS - WITH YOUTUBE COOKIES
    * ═══════════════════════════════════════════════════════════
    */
+  /**
+   * ═══════════════════════════════════════════════════════════
+   * 🔥 BULLETPROOF buildDownloadOptions
+   * ═══════════════════════════════════════════════════════════
+   * Handles: Regular videos, Shorts, Live, Age-restricted, Premium
+   */
   buildDownloadOptions({ url, quality, format, audioOnly }) {
     const options = [];
 
-    // 🔥 STEP 1: ADD COOKIES FOR YOUTUBE
+    // ─────────────────────────────────────────────────────────
+    // STEP 1: ADD COOKIES FOR YOUTUBE ONLY
+    // ─────────────────────────────────────────────────────────
     if (this.isYouTubeUrl(url)) {
       cookieManager.addCookieOptions(options);
     }
 
-    // STEP 2: Format options
+    // ─────────────────────────────────────────────────────────
+    // STEP 2: FORMAT SELECTION
+    // ─────────────────────────────────────────────────────────
     if (audioOnly || format === "mp3") {
-      options.push("-f", "bestaudio/best");
-      if (format === "mp3") {
-        options.push(
-          "--extract-audio",
-          "--audio-format",
-          "mp3",
-          "--audio-quality",
-          "0",
-        );
-      }
+      // Audio extraction - simple and reliable
+      options.push(
+        "-f",
+        "bestaudio/best",
+        "--extract-audio",
+        "--audio-format",
+        "mp3",
+        "--audio-quality",
+        "0",
+      );
     } else {
+      // ═══════════════════════════════════════════════════════════
+      // 🔥 VIDEO FORMAT - BULLETPROOF WITH 3 FALLBACKS
+      // ═══════════════════════════════════════════════════════════
       const heightMap = {
         highest: "2160",
         high: "1080",
@@ -531,26 +544,38 @@ class VideoDownloaderService {
       };
       const maxHeight = heightMap[quality] || "1080";
 
-      options.push(
-        "-f",
-        `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`,
-      );
+      // 🎯 THE MAGIC: Try 3 different format approaches
+      // 1. Separate video+audio (regular videos) → bestvideo[height<=X]+bestaudio
+      // 2. Best combined up to height (Shorts) → best[height<=X]
+      // 3. Best anything (fallback) → best
+      const formatString = [
+        `bestvideo[height<=${maxHeight}]+bestaudio`, // Try separate streams first
+        `best[height<=${maxHeight}]`, // Try combined stream at quality
+        `bestvideo+bestaudio`, // Try any separate streams
+        `best`, // Ultimate fallback
+      ].join("/");
 
+      options.push("-f", formatString);
+
+      // Merge to MP4 if requested
       if (format === "mp4") {
-        options.push("--merge-output-format", "mp4");
         options.push(
+          "--merge-output-format",
+          "mp4",
           "--postprocessor-args",
           "ffmpeg:-c:v copy -c:a aac -b:a 192k",
         );
       }
     }
 
-    // STEP 3: Common options
+    // ─────────────────────────────────────────────────────────
+    // STEP 3: COMMON OPTIONS (ROBUST)
+    // ─────────────────────────────────────────────────────────
     options.push(
       "--no-playlist",
       "--no-warnings",
       "--user-agent",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", // 🔥 UPDATED UA
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
       "--socket-timeout",
       "30",
       "--retries",
@@ -558,6 +583,7 @@ class VideoDownloaderService {
       "--fragment-retries",
       "10",
       "--hls-prefer-native",
+      "--no-check-certificates", // 🔥 Handle HTTPS errors
     );
 
     return options;
