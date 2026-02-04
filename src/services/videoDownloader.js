@@ -2,11 +2,15 @@ const YTDlpWrap = require("yt-dlp-wrap").default;
 const fs = require("fs-extra");
 const path = require("path");
 const crypto = require("crypto");
-const cookieManager = require("./cookieManager"); // 🔥 COOKIE MANAGER
+const { spawn } = require("child_process");
 
 const {
   S3Client,
   PutObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
   ListObjectsV2Command,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
@@ -22,17 +26,11 @@ dns.setServers(["8.8.8.8", "1.1.1.1"]);
 const resolver = new Resolver();
 resolver.setServers(["8.8.8.8", "1.1.1.1"]);
 
-/**
- * ═══════════════════════════════════════════════════════════
- * BULLETPROOF VIDEO DOWNLOADER SERVICE
- * ═══════════════════════════════════════════════════════════
- * Purpose: Download videos from YouTube and other platforms
- * Features: R2 storage, cookie support for YouTube, robust error handling
- */
 class VideoDownloaderService {
   constructor() {
     this.ytDlp = new YTDlpWrap();
 
+    // Use /tmp on Railway/production, local paths in development
     const isProduction =
       process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT;
 
@@ -51,26 +49,6 @@ class VideoDownloaderService {
     this.testDNSResolution();
     this.initializeR2Client();
     this.startCleanupJob();
-
-    // 🔥 SHOW COOKIE STATUS ON STARTUP
-    this.logCookieStatus();
-  }
-
-  /**
-   * 🔥 LOG COOKIE STATUS ON STARTUP
-   */
-  logCookieStatus() {
-    console.log("\n");
-    cookieManager.printStatus();
-  }
-
-  /**
-   * 🔥 CHECK IF URL IS YOUTUBE
-   */
-  isYouTubeUrl(url) {
-    if (!url) return false;
-    const lower = url.toLowerCase();
-    return lower.includes("youtube.com") || lower.includes("youtu.be");
   }
 
   async testDNSResolution() {
@@ -154,6 +132,7 @@ class VideoDownloaderService {
   }
 
   startCleanupJob() {
+    // More aggressive cleanup on Railway (every 2 minutes)
     const cleanupInterval = process.env.RAILWAY_ENVIRONMENT
       ? 2 * 60 * 1000
       : 5 * 60 * 1000;
@@ -161,22 +140,30 @@ class VideoDownloaderService {
     setInterval(async () => {
       try {
         const now = Date.now();
+
+        // Clean both temp and downloads directories
         for (const dir of [this.tempDir, this.downloadDir]) {
           try {
             const files = await fs.readdir(dir);
+
             for (const file of files) {
               const filePath = path.join(dir, file);
               const stats = await fs.stat(filePath);
               const age = now - stats.mtimeMs;
+
+              // Delete files older than 15 minutes on Railway, 30 minutes locally
               const maxAge = process.env.RAILWAY_ENVIRONMENT
                 ? 15 * 60 * 1000
                 : 30 * 60 * 1000;
 
               if (age > maxAge) {
                 await fs.remove(filePath);
+                console.log(`🗑️ Cleaned up old file: ${file}`);
               }
             }
-          } catch (error) {}
+          } catch (error) {
+            // Directory might not exist yet, ignore
+          }
         }
       } catch (error) {
         console.error("Cleanup job error:", error.message);
@@ -194,7 +181,7 @@ class VideoDownloaderService {
       audioOnly = false,
       userIP = null,
       userAgent = null,
-      includeThumbnail = false,
+      includeThumbnail = false, // 🆕 NEW parameter
     } = options;
 
     if (this.activeDownloads.size >= this.maxConcurrentDownloads) {
@@ -293,10 +280,11 @@ class VideoDownloaderService {
         }).catch(() => {});
       }
 
+      // 🆕 BUILD RESPONSE BASED ON includeThumbnail
       const responseData = {
         id: downloadRecord?._id,
         title: metadata.title,
-        thumbnail: metadata.thumbnail,
+        thumbnail: metadata.thumbnail, // Always include thumbnail URL
         duration: metadata.duration,
         platform: detection.platformName,
         quality: downloadResult.quality,
@@ -306,6 +294,7 @@ class VideoDownloaderService {
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       };
 
+      // 🆕 If user wants thumbnail download link, add proxy URL
       if (includeThumbnail && metadata.thumbnail) {
         responseData.thumbnailDownload = {
           url: `/api/v1/download/thumbnail?url=${encodeURIComponent(metadata.thumbnail)}`,
@@ -363,6 +352,8 @@ class VideoDownloaderService {
     )}.${format}`;
     const contentType = this.getContentType(`.${format}`);
 
+    // For now, use simple upload to R2 (not streaming) for reliability
+    // This is more stable than multipart streaming
     if (this.r2Client && this.r2Working) {
       try {
         console.log(`☁️ [${downloadId}] Downloading and uploading to R2...`);
@@ -382,6 +373,7 @@ class VideoDownloaderService {
       }
     }
 
+    // Fallback: Local download
     console.log(`[${downloadId}] Using local storage fallback`);
     return await this.performLocalDownload({
       url,
@@ -404,15 +396,9 @@ class VideoDownloaderService {
       downloadId,
     } = options;
 
+    // Download to temp first
     const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
-
-    // 🔥 BUILD YT-DLP OPTIONS WITH COOKIES
-    const ytDlpArgs = this.buildDownloadOptions({
-      url,
-      quality,
-      format,
-      audioOnly,
-    });
+    const ytDlpArgs = this.buildDownloadOptions({ quality, format, audioOnly });
     ytDlpArgs.push("-o", tempFile);
 
     console.log(`⬇️ [${downloadId}] Downloading video...`);
@@ -424,6 +410,7 @@ class VideoDownloaderService {
       `✓ [${downloadId}] Download complete (${this.formatFileSize(fileSize)})`,
     );
 
+    // Upload to R2
     console.log(`☁️ [${downloadId}] Uploading to R2...`);
     const fileContent = await fs.readFile(tempFile);
     const key = `downloads/${Date.now()}_${crypto
@@ -443,6 +430,7 @@ class VideoDownloaderService {
       }),
     );
 
+    // Generate presigned URL
     const downloadUrl = await getSignedUrl(
       this.r2Client,
       new GetObjectCommand({
@@ -452,6 +440,7 @@ class VideoDownloaderService {
       { expiresIn: 86400 },
     );
 
+    // Clean up temp file
     await fs.remove(tempFile).catch(() => {});
 
     return {
@@ -467,14 +456,7 @@ class VideoDownloaderService {
     const { url, quality, format, audioOnly, fileName, downloadId } = options;
 
     const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
-
-    // 🔥 BUILD YT-DLP OPTIONS WITH COOKIES
-    const ytDlpArgs = this.buildDownloadOptions({
-      url,
-      quality,
-      format,
-      audioOnly,
-    });
+    const ytDlpArgs = this.buildDownloadOptions({ quality, format, audioOnly });
     ytDlpArgs.push("-o", tempFile);
 
     console.log(`⬇️ [${downloadId}] Downloading to temp file...`);
@@ -497,45 +479,21 @@ class VideoDownloaderService {
     };
   }
 
-  /**
-   * ═══════════════════════════════════════════════════════════
-   * 🔥 BUILD YT-DLP OPTIONS - WITH YOUTUBE COOKIES
-   * ═══════════════════════════════════════════════════════════
-   */
-  /**
-   * ═══════════════════════════════════════════════════════════
-   * 🔥 BULLETPROOF buildDownloadOptions
-   * ═══════════════════════════════════════════════════════════
-   * Handles: Regular videos, Shorts, Live, Age-restricted, Premium
-   */
-  buildDownloadOptions({ url, quality, format, audioOnly }) {
+  buildDownloadOptions({ quality, format, audioOnly }) {
     const options = [];
 
-    // ─────────────────────────────────────────────────────────
-    // STEP 1: ADD COOKIES FOR YOUTUBE ONLY
-    // ─────────────────────────────────────────────────────────
-    if (this.isYouTubeUrl(url)) {
-      cookieManager.addCookieOptions(options);
-    }
-
-    // ─────────────────────────────────────────────────────────
-    // STEP 2: FORMAT SELECTION
-    // ─────────────────────────────────────────────────────────
     if (audioOnly || format === "mp3") {
-      // Audio extraction - simple and reliable
-      options.push(
-        "-f",
-        "bestaudio/best",
-        "--extract-audio",
-        "--audio-format",
-        "mp3",
-        "--audio-quality",
-        "0",
-      );
+      options.push("-f", "bestaudio/best");
+      if (format === "mp3") {
+        options.push(
+          "--extract-audio",
+          "--audio-format",
+          "mp3",
+          "--audio-quality",
+          "0",
+        );
+      }
     } else {
-      // ═══════════════════════════════════════════════════════════
-      // 🔥 VIDEO FORMAT - BULLETPROOF WITH 3 FALLBACKS
-      // ═══════════════════════════════════════════════════════════
       const heightMap = {
         highest: "2160",
         high: "1080",
@@ -544,38 +502,26 @@ class VideoDownloaderService {
       };
       const maxHeight = heightMap[quality] || "1080";
 
-      // 🎯 THE MAGIC: Try 3 different format approaches
-      // 1. Separate video+audio (regular videos) → bestvideo[height<=X]+bestaudio
-      // 2. Best combined up to height (Shorts) → best[height<=X]
-      // 3. Best anything (fallback) → best
-      const formatString = [
-        `bestvideo[height<=${maxHeight}]+bestaudio`, // Try separate streams first
-        `best[height<=${maxHeight}]`, // Try combined stream at quality
-        `bestvideo+bestaudio`, // Try any separate streams
-        `best`, // Ultimate fallback
-      ].join("/");
+      // Robust format selection with fallbacks
+      options.push(
+        "-f",
+        `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`,
+      );
 
-      options.push("-f", formatString);
-
-      // Merge to MP4 if requested
       if (format === "mp4") {
+        options.push("--merge-output-format", "mp4");
         options.push(
-          "--merge-output-format",
-          "mp4",
           "--postprocessor-args",
           "ffmpeg:-c:v copy -c:a aac -b:a 192k",
         );
       }
     }
 
-    // ─────────────────────────────────────────────────────────
-    // STEP 3: COMMON OPTIONS (ROBUST)
-    // ─────────────────────────────────────────────────────────
     options.push(
       "--no-playlist",
       "--no-warnings",
       "--user-agent",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "--socket-timeout",
       "30",
       "--retries",
@@ -583,19 +529,12 @@ class VideoDownloaderService {
       "--fragment-retries",
       "10",
       "--hls-prefer-native",
-      "--no-check-certificates", // 🔥 Handle HTTPS errors
     );
-
     return options;
   }
 
   getUserFriendlyError(errorMessage) {
     const errorMap = {
-      "sign in":
-        "YouTube requires login. Please contact support to update cookies.",
-      "not a bot":
-        "YouTube bot detection. Please contact support to update cookies.",
-      403: "Access forbidden. Video may be private or region-locked.",
       private: "This video is private and cannot be downloaded.",
       unavailable: "This video is no longer available.",
       removed: "This video has been removed.",
@@ -651,11 +590,6 @@ class VideoDownloaderService {
     }
   }
 
-  /**
-   * ═══════════════════════════════════════════════════════════
-   * 🔥 GET VIDEO METADATA - WITH YOUTUBE COOKIES
-   * ═══════════════════════════════════════════════════════════
-   */
   async getVideoMetadata(url, platform) {
     try {
       const options = [
@@ -666,13 +600,10 @@ class VideoDownloaderService {
         "20",
         "--no-warnings",
         "--user-agent",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", // 🔥 UPDATED UA
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       ];
 
-      // 🔥 ADD COOKIES FOR YOUTUBE
-      if (this.isYouTubeUrl(url)) {
-        cookieManager.addCookieOptions(options);
-      }
+      // Add platform-specific options
 
       const result = await this.ytDlp.execPromise([url, ...options]);
       const metadata = JSON.parse(result);
@@ -690,8 +621,10 @@ class VideoDownloaderService {
         } catch (e) {}
       }
 
+      // Get best thumbnail
       let thumbnail = null;
       if (metadata.thumbnails && metadata.thumbnails.length > 0) {
+        // Get highest quality thumbnail
         const thumbnails = metadata.thumbnails.sort(
           (a, b) => (b.width || 0) - (a.width || 0),
         );
@@ -782,15 +715,10 @@ class VideoDownloaderService {
   }
 
   getServerStats() {
-    const cookieStatus = cookieManager.getStatus();
     return {
       activeDownloads: this.activeDownloads.size,
       maxConcurrent: this.maxConcurrentDownloads,
       r2Status: this.r2Working ? "operational" : "degraded",
-      cookieStatus:
-        cookieStatus.hasCookies && cookieStatus.valid
-          ? "operational"
-          : "missing",
       uptime: process.uptime(),
     };
   }
