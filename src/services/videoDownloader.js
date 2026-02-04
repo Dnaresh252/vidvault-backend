@@ -1241,17 +1241,16 @@ class VideoDownloaderService {
       };
       const maxHeight = heightMap[quality] || "1080";
 
+      // 🔥 IMPROVED: Better fallback chain for compatibility with Shorts, live streams, etc.
       options.push(
         "-f",
-        `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`,
+        `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/bestvideo+bestaudio/best`,
       );
 
       if (format === "mp4") {
         options.push("--merge-output-format", "mp4");
-        options.push(
-          "--postprocessor-args",
-          "ffmpeg:-c:v copy -c:a aac -b:a 192k",
-        );
+        // 🔥 Removed "-c:v copy" to let ffmpeg auto-decide (more compatible)
+        options.push("--postprocessor-args", "ffmpeg:-c:a aac -b:a 192k");
       }
     }
 
@@ -1337,7 +1336,7 @@ class VideoDownloaderService {
     }
   }
 
-  // 🔥 UPDATED: getVideoMetadata now uses cookies for YouTube
+  // 🔥 UPDATED: getVideoMetadata - DON'T use cookies (causes format bug with --dump-json)
   async getVideoMetadata(url, platform) {
     try {
       const options = [
@@ -1351,10 +1350,9 @@ class VideoDownloaderService {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       ];
 
-      // 🔥 ADD COOKIES FOR YOUTUBE
-      if (platform === "youtube") {
-        cookieManager.addCookieOptions(options);
-      }
+      // 🔥 DON'T ADD COOKIES FOR METADATA EXTRACTION
+      // Metadata works fine without auth, and cookies cause format selection bugs
+      // Cookies are ONLY used for actual video downloads (in buildDownloadOptions)
 
       const result = await this.ytDlp.execPromise([url, ...options]);
       const metadata = JSON.parse(result);
