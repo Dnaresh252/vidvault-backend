@@ -3,7 +3,6 @@ const fs = require("fs-extra");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
-const cookieManager = require("./CookiesManager");
 
 const {
   S3Client,
@@ -22,7 +21,7 @@ const dns = require("dns");
 const { Resolver } = require("dns").promises;
 const platformDetector = require("./platformDetector");
 const Download = require("../models/Download");
-
+const cookieManager = require("./cookieManager");
 dns.setServers(["8.8.8.8", "1.1.1.1"]);
 const resolver = new Resolver();
 resolver.setServers(["8.8.8.8", "1.1.1.1"]);
