@@ -1,11 +1,5 @@
-# -------------------------------
-# ✅ Base image
-# -------------------------------
 FROM node:20-slim
 
-# -------------------------------
-# 🧩 Install dependencies
-# -------------------------------
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -15,38 +9,25 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# -------------------------------
-# 🧠 Set up Python virtual env + yt-dlp
-# -------------------------------
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-RUN pip install --no-cache-dir --upgrade pip "yt-dlp[default]"
+# ✅ Install yt-dlp with pre-release fixes
+RUN pip install --no-cache-dir -U --pre "yt-dlp[default]"
 RUN yt-dlp --version
-
 
 WORKDIR /app
 
-# Copy package files and install Node dependencies
 COPY package*.json ./
 RUN npm ci --only=production
 
-# Copy app source
 COPY . .
 
-# -------------------------------
-# 🗂 Create temp directories
-# -------------------------------
 RUN mkdir -p /tmp/downloads /tmp/temp && \
     chmod 777 /tmp/downloads /tmp/temp
 
-
-# -------------------------------
 USER node
 
-# -------------------------------
-# 🚀 Expose and start
-# -------------------------------
 EXPOSE 5000
-CMD ["sh", "-c", "yt-dlp -U || true && node server.js"]
 
+CMD ["node", "server.js"]
