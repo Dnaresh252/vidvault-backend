@@ -530,6 +530,8 @@ class VideoDownloaderService {
       "--fragment-retries",
       "10",
       "--hls-prefer-native",
+      "--js-runtimes",
+      "node",
     );
     cookieManager.addCookieOptions(options);
     return options;
