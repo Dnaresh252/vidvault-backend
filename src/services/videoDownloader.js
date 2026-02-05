@@ -615,7 +615,6 @@ class VideoDownloaderService {
 
       if (platform === "youtube") {
         cookieManager.addCookieOptions(options);
-        options.push("--extractor-args", "youtube:player_client=android");
       }
 
       // Add platform-specific options
