@@ -42,8 +42,7 @@ COPY . .
 RUN mkdir -p /tmp/downloads /tmp/temp && \
     chmod 777 /tmp/downloads /tmp/temp
 
-# -------------------------------
-# 👤 Use built-in 'node' user instead of creating new one
+
 # -------------------------------
 USER node
 
