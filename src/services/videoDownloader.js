@@ -493,6 +493,7 @@ class VideoDownloaderService {
 
     if (audioOnly || format === "mp3") {
       options.push("-f", "bestaudio/best");
+
       if (format === "mp3") {
         options.push(
           "--extract-audio",
@@ -509,6 +510,7 @@ class VideoDownloaderService {
         medium: "720",
         low: "480",
       };
+
       const maxHeight = heightMap[quality] || "1080";
 
       options.push("-S", `res:${maxHeight}`);
@@ -534,10 +536,9 @@ class VideoDownloaderService {
       "node",
     );
 
+    // ✅ Only for YouTube
     if (platform === "youtube") {
       cookieManager.addCookieOptions(options);
-      options.push("--extractor-args", "youtube:player_client=android");
-      options.push("--hls-prefer-native");
     }
 
     return options;

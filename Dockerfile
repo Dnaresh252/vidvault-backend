@@ -24,9 +24,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip "yt-dlp[default]"
 RUN yt-dlp --version
 
-# -------------------------------
-# 📦 Setup working directory
-# -------------------------------
+
 WORKDIR /app
 
 # Copy package files and install Node dependencies
