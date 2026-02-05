@@ -137,6 +137,7 @@ app.use((req, res) => {
     message: `Route ${req.originalUrl} not found`,
   });
 });
+console.log("Running on Node:", process.version);
 
 // Start server
 const server = app.listen(PORT, () => {
