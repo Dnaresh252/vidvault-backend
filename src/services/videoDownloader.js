@@ -3,6 +3,7 @@ const fs = require("fs-extra");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
+const cookieManager = require("./CookiesManager");
 
 const {
   S3Client,
@@ -520,6 +521,7 @@ class VideoDownloaderService {
     options.push(
       "--no-playlist",
       "--no-warnings",
+      "-vU",
       "--user-agent",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "--socket-timeout",
@@ -530,6 +532,7 @@ class VideoDownloaderService {
       "10",
       "--hls-prefer-native",
     );
+    cookieManager.addCookieOptions(options);
     return options;
   }
 
