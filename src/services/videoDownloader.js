@@ -346,7 +346,7 @@ class VideoDownloaderService {
 
   async performStreamingDownload(options) {
     const { url, quality, format, audioOnly, metadata, downloadId } = options;
-
+    const platform = options.detection?.platform || "youtube";
     const fileName = `${this.sanitizeFilename(
       metadata?.title || "video",
     )}.${format}`;
@@ -398,7 +398,12 @@ class VideoDownloaderService {
 
     // Download to temp first
     const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
-    const ytDlpArgs = this.buildDownloadOptions({ quality, format, audioOnly });
+    const ytDlpArgs = this.buildDownloadOptions({
+      quality,
+      format,
+      audioOnly,
+      platform: "youtube",
+    });
     ytDlpArgs.push("-o", tempFile);
 
     console.log(`⬇️ [${downloadId}] Downloading video...`);
@@ -456,7 +461,12 @@ class VideoDownloaderService {
     const { url, quality, format, audioOnly, fileName, downloadId } = options;
 
     const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
-    const ytDlpArgs = this.buildDownloadOptions({ quality, format, audioOnly });
+    const ytDlpArgs = this.buildDownloadOptions({
+      quality,
+      format,
+      audioOnly,
+      platform: "youtube",
+    });
     ytDlpArgs.push("-o", tempFile);
 
     console.log(`⬇️ [${downloadId}] Downloading to temp file...`);
@@ -602,10 +612,14 @@ class VideoDownloaderService {
         "--skip-download",
         "--socket-timeout",
         "20",
-        "--no-warnings",
-        "--user-agent",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--js-runtimes",
+        "node",
       ];
+
+      if (platform === "youtube") {
+        cookieManager.addCookieOptions(options);
+        options.push("--extractor-args", "youtube:player_client=android");
+      }
 
       // Add platform-specific options
 
