@@ -488,8 +488,7 @@ class VideoDownloaderService {
       format,
     };
   }
-
-  buildDownloadOptions({ quality, format, audioOnly }) {
+  buildDownloadOptions({ quality, format, audioOnly, platform }) {
     const options = [];
 
     if (audioOnly || format === "mp3") {
@@ -512,38 +511,35 @@ class VideoDownloaderService {
       };
       const maxHeight = heightMap[quality] || "1080";
 
-      // Robust format selection with fallbacks
-      options.push(
-        "-f",
-        `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`,
-      );
+      options.push("-S", `res:${maxHeight}`);
 
       if (format === "mp4") {
         options.push("--merge-output-format", "mp4");
-        options.push(
-          "--postprocessor-args",
-          "ffmpeg:-c:v copy -c:a aac -b:a 192k",
-        );
       }
     }
 
     options.push(
       "--no-playlist",
-      "--no-warnings",
-      "-vU",
-      "--user-agent",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "--socket-timeout",
       "30",
       "--retries",
       "10",
       "--fragment-retries",
       "10",
-      "--hls-prefer-native",
+      "--retry-sleep",
+      "3",
+      "--file-access-retries",
+      "5",
       "--js-runtimes",
       "node",
     );
-    cookieManager.addCookieOptions(options);
+
+    if (platform === "youtube") {
+      cookieManager.addCookieOptions(options);
+      options.push("--extractor-args", "youtube:player_client=android");
+      options.push("--hls-prefer-native");
+    }
+
     return options;
   }
 
