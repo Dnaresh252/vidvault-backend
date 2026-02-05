@@ -3,7 +3,7 @@ const fs = require("fs-extra");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
-
+const cookieManager = require("./cookieManager");
 const {
   S3Client,
   PutObjectCommand,
@@ -201,7 +201,7 @@ class VideoDownloaderService {
       if (!detection.success) {
         throw new Error(detection.error);
       }
-
+      const normalizedFormat = this.normalizeFormat(detection.platform, format);
       console.log(
         `\n📥 [${downloadId}] Starting download from ${detection.platformName}`,
       );
@@ -254,7 +254,7 @@ class VideoDownloaderService {
       const downloadResult = await this.performStreamingDownload({
         url,
         quality,
-        format,
+        format: normalizedFormat,
         audioOnly,
         detection,
         metadata,
@@ -385,6 +385,73 @@ class VideoDownloaderService {
     });
   }
 
+  // async downloadAndUploadToR2(options) {
+  //   const {
+  //     url,
+  //     quality,
+  //     format,
+  //     audioOnly,
+  //     fileName,
+  //     contentType,
+  //     downloadId,
+  //   } = options;
+
+  //   // Download to temp first
+  //   const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
+  //   const ytDlpArgs = this.buildDownloadOptions({ quality, format, audioOnly });
+  //   ytDlpArgs.push("-o", tempFile);
+
+  //   console.log(`⬇️ [${downloadId}] Downloading video...`);
+  //   await this.ytDlp.execPromise([url, ...ytDlpArgs]);
+
+  //   const stats = await fs.stat(tempFile);
+  //   const fileSize = stats.size;
+  //   console.log(
+  //     `✓ [${downloadId}] Download complete (${this.formatFileSize(fileSize)})`,
+  //   );
+
+  //   // Upload to R2
+  //   console.log(`☁️ [${downloadId}] Uploading to R2...`);
+  //   const fileContent = await fs.readFile(tempFile);
+  //   const key = `downloads/${Date.now()}_${crypto
+  //     .randomBytes(8)
+  //     .toString("hex")}_${fileName}`;
+
+  //   await this.r2Client.send(
+  //     new PutObjectCommand({
+  //       Bucket: process.env.R2_BUCKET_NAME,
+  //       Key: key,
+  //       Body: fileContent,
+  //       ContentType: contentType,
+  //       ContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(
+  //         fileName,
+  //       )}`,
+  //       CacheControl: "public, max-age=31536000",
+  //     }),
+  //   );
+
+  //   // Generate presigned URL
+  //   const downloadUrl = await getSignedUrl(
+  //     this.r2Client,
+  //     new GetObjectCommand({
+  //       Bucket: process.env.R2_BUCKET_NAME,
+  //       Key: key,
+  //     }),
+  //     { expiresIn: 86400 },
+  //   );
+
+  //   // Clean up temp file
+  //   await fs.remove(tempFile).catch(() => {});
+
+  //   return {
+  //     success: true,
+  //     downloadUrl,
+  //     fileSize,
+  //     quality,
+  //     format,
+  //   };
+  // }
+
   async downloadAndUploadToR2(options) {
     const {
       url,
@@ -394,11 +461,20 @@ class VideoDownloaderService {
       fileName,
       contentType,
       downloadId,
+      platform, // 🆕 ADD THIS
     } = options;
 
     // Download to temp first
     const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
-    const ytDlpArgs = this.buildDownloadOptions({ quality, format, audioOnly });
+
+    // 🔥 UPDATE THIS LINE - Add platform parameter:
+    const ytDlpArgs = this.buildDownloadOptions({
+      quality,
+      format,
+      audioOnly,
+      platform, // 🆕 PASS PLATFORM HERE
+    });
+
     ytDlpArgs.push("-o", tempFile);
 
     console.log(`⬇️ [${downloadId}] Downloading video...`);
@@ -453,10 +529,26 @@ class VideoDownloaderService {
   }
 
   async performLocalDownload(options) {
-    const { url, quality, format, audioOnly, fileName, downloadId } = options;
+    const {
+      url,
+      quality,
+      format,
+      audioOnly,
+      fileName,
+      downloadId,
+      platform, // 🆕 ADD THIS
+    } = options;
 
     const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
-    const ytDlpArgs = this.buildDownloadOptions({ quality, format, audioOnly });
+
+    // 🔥 UPDATE THIS LINE - Add platform parameter:
+    const ytDlpArgs = this.buildDownloadOptions({
+      quality,
+      format,
+      audioOnly,
+      platform, // 🆕 PASS PLATFORM HERE
+    });
+
     ytDlpArgs.push("-o", tempFile);
 
     console.log(`⬇️ [${downloadId}] Downloading to temp file...`);
@@ -479,9 +571,150 @@ class VideoDownloaderService {
     };
   }
 
-  buildDownloadOptions({ quality, format, audioOnly }) {
+  // ═══════════════════════════════════════════════════════════
+  // 2C. UPDATE performStreamingDownload() - Around Line 232
+  // ═══════════════════════════════════════════════════════════
+  // FIND THIS METHOD and UPDATE to pass platform:
+
+  async performStreamingDownload(options) {
+    const {
+      url,
+      quality,
+      format,
+      audioOnly,
+      metadata,
+      downloadId,
+      detection, // 🆕 ALREADY EXISTS
+    } = options;
+
+    const fileName = `${this.sanitizeFilename(
+      metadata?.title || "video",
+    )}.${format}`;
+    const contentType = this.getContentType(`.${format}`);
+
+    // Get platform from detection
+    const platform = detection.platform; // 🆕 ADD THIS LINE
+
+    // For now, use simple upload to R2 (not streaming) for reliability
+    if (this.r2Client && this.r2Working) {
+      try {
+        console.log(`☁️ [${downloadId}] Downloading and uploading to R2...`);
+        const result = await this.downloadAndUploadToR2({
+          url,
+          quality,
+          format,
+          audioOnly,
+          fileName,
+          contentType,
+          downloadId,
+          platform, // 🆕 PASS PLATFORM HERE
+        });
+        console.log(`✓ [${downloadId}] R2 upload completed`);
+        return result;
+      } catch (r2Error) {
+        console.warn(`⚠ [${downloadId}] R2 upload failed:`, r2Error.message);
+      }
+    }
+
+    // Fallback: Local download
+    console.log(`[${downloadId}] Using local storage fallback`);
+    return await this.performLocalDownload({
+      url,
+      quality,
+      format,
+      audioOnly,
+      fileName,
+      downloadId,
+      platform, // 🆕 PASS PLATFORM HERE
+    });
+  }
+
+  // async performLocalDownload(options) {
+  //   const { url, quality, format, audioOnly, fileName, downloadId } = options;
+
+  //   const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
+  //   const ytDlpArgs = this.buildDownloadOptions({ quality, format, audioOnly });
+  //   ytDlpArgs.push("-o", tempFile);
+
+  //   console.log(`⬇️ [${downloadId}] Downloading to temp file...`);
+  //   await this.ytDlp.execPromise([url, ...ytDlpArgs]);
+
+  //   const stats = await fs.stat(tempFile);
+  //   const fileSize = stats.size;
+
+  //   const finalFileName = `${Date.now()}_${fileName}`;
+  //   const finalPath = path.join(this.downloadDir, finalFileName);
+
+  //   await fs.move(tempFile, finalPath);
+
+  //   return {
+  //     success: true,
+  //     downloadUrl: `/api/v1/download/file/${encodeURIComponent(finalFileName)}`,
+  //     fileSize,
+  //     quality,
+  //     format,
+  //   };
+  // }
+
+  // buildDownloadOptions({ quality, format, audioOnly }) {
+  //   const options = [];
+
+  //   if (audioOnly || format === "mp3") {
+  //     options.push("-f", "bestaudio/best");
+  //     if (format === "mp3") {
+  //       options.push(
+  //         "--extract-audio",
+  //         "--audio-format",
+  //         "mp3",
+  //         "--audio-quality",
+  //         "0",
+  //       );
+  //     }
+  //   } else {
+  //     const heightMap = {
+  //       highest: "2160",
+  //       high: "1080",
+  //       medium: "720",
+  //       low: "480",
+  //     };
+  //     const maxHeight = heightMap[quality] || "1080";
+
+  //     // Robust format selection with fallbacks
+  //     options.push(
+  //       "-f",
+  //       `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`,
+  //     );
+
+  //     if (format === "mp4") {
+  //       options.push("--merge-output-format", "mp4");
+  //       options.push(
+  //         "--postprocessor-args",
+  //         "ffmpeg:-c:v copy -c:a aac -b:a 192k",
+  //       );
+  //     }
+  //   }
+
+  //   options.push(
+  //     "--no-playlist",
+  //     "--no-warnings",
+  //     "--user-agent",
+  //     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  //     "--socket-timeout",
+  //     "30",
+  //     "--retries",
+  //     "10",
+  //     "--fragment-retries",
+  //     "10",
+  //     "--hls-prefer-native",
+  //   );
+  //   return options;
+  // }
+  buildDownloadOptions({ quality, format, audioOnly, platform }) {
     const options = [];
 
+    // ═══════════════════════════════════════════════════════════
+    // 1. AUDIO-ONLY / MP3 DOWNLOAD
+    // ═══════════════════════════════════════════════════════════
     if (audioOnly || format === "mp3") {
       options.push("-f", "bestaudio/best");
       if (format === "mp3") {
@@ -493,7 +726,11 @@ class VideoDownloaderService {
           "0",
         );
       }
-    } else {
+    }
+    // ═══════════════════════════════════════════════════════════
+    // 2. VIDEO DOWNLOAD - FLEXIBLE FORMAT SELECTION
+    // ═══════════════════════════════════════════════════════════
+    else {
       const heightMap = {
         highest: "2160",
         high: "1080",
@@ -502,11 +739,18 @@ class VideoDownloaderService {
       };
       const maxHeight = heightMap[quality] || "1080";
 
-      // Robust format selection with fallbacks
-      options.push(
-        "-f",
-        `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`,
-      );
+      // 🔥 CRITICAL FIX: More flexible format string
+      // This works with AND without cookies
+      const formatString =
+        `bestvideo[height<=${maxHeight}][ext=mp4]+bestaudio[ext=m4a]/` +
+        `bestvideo[height<=${maxHeight}]+bestaudio/` +
+        `best[height<=${maxHeight}][ext=mp4]/` +
+        `best[height<=${maxHeight}]/` +
+        `bestvideo[ext=mp4]+bestaudio/` +
+        `bestvideo+bestaudio/` +
+        `best`;
+
+      options.push("-f", formatString);
 
       if (format === "mp4") {
         options.push("--merge-output-format", "mp4");
@@ -517,19 +761,80 @@ class VideoDownloaderService {
       }
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // 3. BASIC OPTIONS
+    // ═══════════════════════════════════════════════════════════
     options.push(
       "--no-playlist",
       "--no-warnings",
-      "--user-agent",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "--socket-timeout",
       "30",
       "--retries",
       "10",
       "--fragment-retries",
       "10",
-      "--hls-prefer-native",
+      "--retry-sleep",
+      "3",
+      "--file-access-retries",
+      "5",
     );
+
+    // ═══════════════════════════════════════════════════════════
+    // 4. YOUTUBE-SPECIFIC HANDLING (CRITICAL!)
+    // ═══════════════════════════════════════════════════════════
+    if (platform === "youtube") {
+      // 🍪 Add cookies for YouTube ONLY
+      const cookiesAdded = cookieManager.addCookieOptions(options);
+
+      // 🤖 Anti-bot measures for YouTube (2026 update)
+      options.push(
+        "--extractor-args",
+        "youtube:player_client=android,web",
+        "--extractor-args",
+        "youtube:player_skip=webpage,configs",
+      );
+
+      if (cookiesAdded) {
+        console.log("✅ [YOUTUBE] Using authenticated download with cookies");
+      } else {
+        console.log(
+          "⚠️  [YOUTUBE] Attempting download without cookies - bot detection may occur",
+        );
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 5. USER AGENT (ALL PLATFORMS)
+    // ═══════════════════════════════════════════════════════════
+    options.push(
+      "--user-agent",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+    );
+
+    // ═══════════════════════════════════════════════════════════
+    // 6. PLATFORM-SPECIFIC OPTIMIZATIONS
+    // ═══════════════════════════════════════════════════════════
+    switch (platform) {
+      case "youtube":
+        options.push("--hls-prefer-native");
+        break;
+
+      case "twitter":
+        // Twitter/X specific - no cookies needed
+        options.push("--no-check-certificates");
+        break;
+
+      case "instagram":
+        // Instagram specific
+        options.push("--no-check-certificates");
+        break;
+
+      case "tiktok":
+        // TikTok specific
+        options.push("--no-check-certificates");
+        break;
+    }
+
     return options;
   }
 
@@ -590,6 +895,66 @@ class VideoDownloaderService {
     }
   }
 
+  // async getVideoMetadata(url, platform) {
+  //   try {
+  //     const options = [
+  //       "--dump-json",
+  //       "--no-playlist",
+  //       "--skip-download",
+  //       "--socket-timeout",
+  //       "20",
+  //       "--no-warnings",
+  //       "--user-agent",
+  //       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  //     ];
+
+  //     // Add platform-specific options
+
+  //     const result = await this.ytDlp.execPromise([url, ...options]);
+  //     const metadata = JSON.parse(result);
+
+  //     let uploadDate = null;
+  //     if (metadata.upload_date) {
+  //       try {
+  //         const dateStr = metadata.upload_date.toString();
+  //         if (dateStr.length === 8) {
+  //           const year = parseInt(dateStr.substring(0, 4));
+  //           const month = parseInt(dateStr.substring(4, 6)) - 1;
+  //           const day = parseInt(dateStr.substring(6, 8));
+  //           uploadDate = new Date(year, month, day);
+  //         }
+  //       } catch (e) {}
+  //     }
+
+  //     // Get best thumbnail
+  //     let thumbnail = null;
+  //     if (metadata.thumbnails && metadata.thumbnails.length > 0) {
+  //       // Get highest quality thumbnail
+  //       const thumbnails = metadata.thumbnails.sort(
+  //         (a, b) => (b.width || 0) - (a.width || 0),
+  //       );
+  //       thumbnail = thumbnails[0].url;
+  //     } else if (metadata.thumbnail) {
+  //       thumbnail = metadata.thumbnail;
+  //     }
+
+  //     return {
+  //       title: metadata.title || "Unknown Title",
+  //       description: (metadata.description || "").substring(0, 2000),
+  //       thumbnail: thumbnail,
+  //       duration: metadata.duration || 0,
+  //       view_count: metadata.view_count || 0,
+  //       upload_date: uploadDate,
+  //       uploader: metadata.uploader || "Unknown",
+  //       uploader_id: metadata.uploader_id || "",
+  //       uploader_verified: metadata.uploader_verified || false,
+  //       webpage_url: metadata.webpage_url || url,
+  //     };
+  //   } catch (error) {
+  //     console.error("Metadata extraction error:", error.message);
+  //     throw error;
+  //   }
+  // }
   async getVideoMetadata(url, platform) {
     try {
       const options = [
@@ -603,7 +968,11 @@ class VideoDownloaderService {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       ];
 
-      // Add platform-specific options
+      // 🆕 ADD COOKIES FOR YOUTUBE METADATA
+      if (platform === "youtube") {
+        cookieManager.addCookieOptions(options);
+        options.push("--extractor-args", "youtube:player_client=android,web");
+      }
 
       const result = await this.ytDlp.execPromise([url, ...options]);
       const metadata = JSON.parse(result);
@@ -624,7 +993,6 @@ class VideoDownloaderService {
       // Get best thumbnail
       let thumbnail = null;
       if (metadata.thumbnails && metadata.thumbnails.length > 0) {
-        // Get highest quality thumbnail
         const thumbnails = metadata.thumbnails.sort(
           (a, b) => (b.width || 0) - (a.width || 0),
         );
@@ -649,6 +1017,32 @@ class VideoDownloaderService {
       console.error("Metadata extraction error:", error.message);
       throw error;
     }
+  }
+
+  normalizeFormat(platform, requestedFormat) {
+    // Platform-specific format enforcement
+    const platformFormats = {
+      youtube: ["mp4", "webm", "mp3"], // YouTube supports all
+      twitter: ["mp4", "mp3"], // Twitter ONLY mp4/mp3
+      instagram: ["mp4", "mp3"], // Instagram ONLY mp4/mp3
+      tiktok: ["mp4", "mp3"], // TikTok ONLY mp4/mp3
+      facebook: ["mp4", "mp3"], // Facebook ONLY mp4/mp3
+      reddit: ["mp4", "mp3"], // Reddit ONLY mp4/mp3
+      vimeo: ["mp4", "webm", "mp3"], // Vimeo supports all
+      linkedin: ["mp4", "mp3"], // LinkedIn ONLY mp4/mp3
+    };
+
+    const allowedFormats = platformFormats[platform] || ["mp4", "mp3"];
+
+    // If requested format is not supported by platform, force mp4
+    if (!allowedFormats.includes(requestedFormat)) {
+      console.log(
+        `⚠️  [${platform.toUpperCase()}] Format ${requestedFormat} not supported, using mp4`,
+      );
+      return "mp4";
+    }
+
+    return requestedFormat;
   }
 
   validateDownloadRequest(options) {
