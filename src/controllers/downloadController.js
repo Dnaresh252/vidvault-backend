@@ -725,6 +725,7 @@ const instantMetadataService = require("../services/instantMetadataService");
 const path = require("path");
 const fs = require("fs-extra");
 const fetch = require("node-fetch");
+const Download = require("../models/Download");
 
 // ----------------------
 // 🔥 FIXED: Download with Real-time Progress (SSE)
@@ -1352,12 +1353,50 @@ exports.healthCheck = async (req, res) => {
   }
 };
 
-exports.getServerStats = (req, res) => {
+// ==================== REPLACE getServerStats FUNCTION ====================
+exports.getServerStats = async (req, res) => {
   try {
     const stats = videoDownloader.getServerStats();
-    res.status(200).json({ status: "success", data: stats });
+
+    // 🔥 NEW: Get REAL counts from database
+    const [totalDownloads, downloadsToday] = await Promise.all([
+      // Total completed downloads
+      Download.countDocuments({ status: "completed" }),
+
+      // Downloads in last 24 hours
+      Download.countDocuments({
+        status: "completed",
+        createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+      }),
+    ]);
+
+    // Get platform count
+    const platforms = videoDownloader.getSupportedPlatforms();
+
+    res.status(200).json({
+      status: "success",
+      data: {
+        totalDownloads: totalDownloads || 0, // 🔥 REAL count from DB
+        platformsSupported: platforms.length,
+        downloadsToday: downloadsToday || 0, // 🔥 REAL count from DB
+        activeDownloads: stats.activeDownloads,
+        maxConcurrent: stats.maxConcurrent,
+        uptime: Math.floor(stats.uptime),
+        r2Status: stats.r2Status,
+      },
+    });
   } catch (error) {
-    res.status(500).json({ status: "error", message: "Error fetching stats" });
+    console.error("❌ Stats error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Error fetching stats",
+      // Fallback to defaults
+      data: {
+        totalDownloads: 0,
+        platformsSupported: 15,
+        downloadsToday: 0,
+      },
+    });
   }
 };
 
