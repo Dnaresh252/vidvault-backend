@@ -305,7 +305,7 @@ app.use("/api/v1", apiLimiter);
 
 // API routes
 app.use("/api/v1/download", require("./src/routes/download"));
-app.use("/api/v1/instant", require("./src/routes/instantroutes")); // 🚀 NEW: Instant metadata
+app.use("/api/v1/instant", require("./src/routes/Instantroutes")); // 🚀 NEW: Instant metadata
 
 // Error handling middleware
 app.use((err, req, res, next) => {
