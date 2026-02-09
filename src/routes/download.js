@@ -1,56 +1,114 @@
 const express = require("express");
 const downloadController = require("../controllers/downloadController");
 const { downloadLimiter, apiLimiter } = require("../middleware/rateLimiting");
-const statsController = require("../controllers/statsController");
 
 const router = express.Router();
 
-// Health check endpoint (no rate limiting)
-router.get("/health", downloadController.healthCheck);
+// ==================== MAIN DOWNLOAD ENDPOINTS ====================
 
-// Apply general rate limiting to all other routes
-router.use(apiLimiter);
+/**
+ * 🔥 NEW: DOWNLOAD WITH REAL-TIME PROGRESS (SSE)
+ * GET /api/v1/download/video-progress?url=URL&quality=high&format=mp4&includeThumbnail=false
+ * POST /api/v1/download/video-progress (also supported for compatibility)
+ * Returns: Server-Sent Events stream with progress updates
+ *
+ * IMPORTANT: SSE works best with GET requests!
+ */
+router.get(
+  "/video-progress",
+  downloadLimiter,
+  downloadController.downloadVideoWithProgress,
+);
+router.post(
+  "/video-progress",
+  downloadLimiter,
+  downloadController.downloadVideoWithProgress,
+);
 
-// Public information routes (light rate limiting)
-router.get("/platforms", downloadController.getSupportedPlatforms);
-
-// Stats endpoint (if you have it)
-if (statsController && statsController.getStats) {
-  router.get("/stats", statsController.getStats);
-}
-
-// Metadata extraction (moderate rate limiting)
-router.post("/metadata", downloadController.getVideoMetadata);
-
-// Thumbnail proxy - CORS fix (light rate limiting)
-router.get("/thumbnail", downloadController.proxyThumbnail);
-// 🆕 NEW: Get thumbnail URL only (no download)
-router.post("/thumbnail-url", apiLimiter, downloadController.getThumbnailUrl);
-
-// Main download route (strict rate limiting)
+/**
+ * 🚀 DOWNLOAD VIDEO - Main endpoint (no progress)
+ * POST /api/v1/download/video
+ * Body: { url, quality, format, audioOnly, includeThumbnail }
+ */
 router.post("/video", downloadLimiter, downloadController.downloadVideo);
-// Thumbnail-only download endpoint
+
+// ==================== METADATA ====================
+
+/**
+ * 📋 GET VIDEO METADATA (with cache)
+ * POST /api/v1/download/metadata
+ */
+router.post("/metadata", apiLimiter, downloadController.getVideoMetadata);
+
+// ==================== THUMBNAILS ====================
+
+/**
+ * 📸 DOWNLOAD THUMBNAIL ONLY
+ * POST /api/v1/download/thumbnail-only
+ */
 router.post(
   "/thumbnail-only",
   apiLimiter,
   downloadController.downloadThumbnailOnly,
 );
-// File serving (no additional rate limiting - already protected by filename validation)
+
+/**
+ * 🖼️ THUMBNAIL PROXY (CORS-safe)
+ * GET /api/v1/download/thumbnail?url=THUMBNAIL_URL
+ */
+router.get("/thumbnail", downloadController.proxyThumbnail);
+
+/**
+ * 🔗 GET THUMBNAIL URL
+ * POST /api/v1/download/thumbnail-url
+ */
+router.post("/thumbnail-url", apiLimiter, downloadController.getThumbnailUrl);
+
+// ==================== FILE SERVING ====================
+
+/**
+ * 📦 SERVE DOWNLOADED FILE
+ * GET /api/v1/download/file/:filename
+ */
 router.get("/file/:filename", downloadController.serveFile);
 
-// 404 handler for download routes
+// ==================== PLATFORM INFO ====================
+
+/**
+ * 🌐 GET SUPPORTED PLATFORMS
+ * GET /api/v1/download/platforms
+ */
+router.get("/platforms", downloadController.getSupportedPlatforms);
+
+// ==================== HEALTH & STATS ====================
+
+/**
+ * ❤️ HEALTH CHECK
+ * GET /api/v1/download/health
+ */
+router.get("/health", downloadController.healthCheck);
+
+/**
+ * 📊 SERVER STATS
+ * GET /api/v1/download/stats
+ */
+router.get("/stats", downloadController.getServerStats);
+
+// ==================== 404 HANDLER ====================
 router.use((req, res) => {
   res.status(404).json({
     status: "error",
     message: "Download endpoint not found",
     availableEndpoints: {
-      "GET /health": "Service health check",
-      "GET /platforms": "List supported platforms",
-      "POST /metadata": "Get video metadata",
-      "POST /video": "Download video",
-      "POST /thumbnail-url": "Get thumbnail URL only",
-      "GET /file/:filename": "Retrieve downloaded file",
-      "GET /thumbnail": "Proxy thumbnail image",
+      "GET /video-progress": "🔥 Download with real-time progress (SSE)",
+      "POST /video": "Main download endpoint",
+      "POST /metadata": "Get video metadata (cached)",
+      "POST /thumbnail-only": "Download thumbnail only",
+      "GET /thumbnail": "Proxy thumbnail (CORS-safe)",
+      "GET /file/:filename": "Serve downloaded file",
+      "GET /platforms": "Get supported platforms",
+      "GET /health": "Health check",
+      "GET /stats": "Server statistics",
     },
   });
 });
