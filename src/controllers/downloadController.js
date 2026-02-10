@@ -1353,20 +1353,22 @@ exports.healthCheck = async (req, res) => {
   }
 };
 
-// ==================== REPLACE getServerStats FUNCTION ====================
 exports.getServerStats = async (req, res) => {
   try {
     const stats = videoDownloader.getServerStats();
 
-    // 🔥 NEW: Get REAL counts from database
+    // 🔥 FIX: Calculate TODAY properly (midnight to now)
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0); // Set to midnight TODAY
+
     const [totalDownloads, downloadsToday] = await Promise.all([
       // Total completed downloads
       Download.countDocuments({ status: "completed" }),
 
-      // Downloads in last 24 hours
+      // 🔥 FIXED: Downloads from midnight TODAY to now
       Download.countDocuments({
         status: "completed",
-        createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+        createdAt: { $gte: startOfToday }, // From midnight today
       }),
     ]);
 
@@ -1376,9 +1378,9 @@ exports.getServerStats = async (req, res) => {
     res.status(200).json({
       status: "success",
       data: {
-        totalDownloads: totalDownloads || 0, // 🔥 REAL count from DB
+        totalDownloads: totalDownloads || 0,
         platformsSupported: platforms.length,
-        downloadsToday: downloadsToday || 0, // 🔥 REAL count from DB
+        downloadsToday: downloadsToday || 0, // 🔥 NOW SHOWS REAL TODAY COUNT!
         activeDownloads: stats.activeDownloads,
         maxConcurrent: stats.maxConcurrent,
         uptime: Math.floor(stats.uptime),
@@ -1390,7 +1392,6 @@ exports.getServerStats = async (req, res) => {
     res.status(500).json({
       status: "error",
       message: "Error fetching stats",
-      // Fallback to defaults
       data: {
         totalDownloads: 0,
         platformsSupported: 15,
@@ -1399,7 +1400,6 @@ exports.getServerStats = async (req, res) => {
     });
   }
 };
-
 function getContentType(ext) {
   const types = {
     ".mp4": "video/mp4",
