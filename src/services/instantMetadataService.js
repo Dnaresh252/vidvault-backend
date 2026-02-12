@@ -6,6 +6,7 @@ const cookieManager = require("./cookieManager");
 class InstantMetadataService {
   constructor() {
     this.ytDlp = new YTDlpWrap();
+    this.inflightRequests = new Map();
   }
 
   /**
@@ -42,16 +43,43 @@ class InstantMetadataService {
           },
         };
       }
-
+      // 3️⃣ Cache MISS - check if already fetching (prevents duplicate yt-dlp calls)
+      if (this.inflightRequests.has(url)) {
+        console.log(`⏳ Waiting for in-flight request...`);
+        return await this.inflightRequests.get(url);
+      }
       // 3️⃣ Cache MISS - Fetch from source (2-3 seconds)
       console.log(
         `📡 Fetching fresh metadata from ${detection.platformName}...`,
       );
+      // Create the promise and store it so parallel requests share it
+      const fetchPromise = this.fetchMetadataFromSource(url, detection.platform)
+        .then(async (metadata) => {
+          await cacheService.setMetadata(url, metadata);
+          this.inflightRequests.delete(url);
+          return metadata;
+        })
+        .catch((err) => {
+          this.inflightRequests.delete(url); // always clean up
+          throw err;
+        });
 
-      const metadata = await this.fetchMetadataFromSource(
+      this.inflightRequests.set(
         url,
-        detection.platform,
+        fetchPromise.then((metadata) => ({
+          success: true,
+          cached: false,
+          responseTime: Date.now() - startTime,
+          data: {
+            ...metadata,
+            platform: detection.platformName,
+            platformKey: detection.platform,
+            videoId: detection.videoId,
+          },
+        })),
       );
+
+      const metadata = await fetchPromise;
 
       // 4️⃣ Cache for next time
       await cacheService.setMetadata(url, metadata);

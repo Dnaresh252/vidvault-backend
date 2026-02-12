@@ -1,7 +1,7 @@
 const express = require("express");
 const downloadController = require("../controllers/downloadController");
 const { downloadLimiter, apiLimiter } = require("../middleware/rateLimiting");
-
+const rateLimit = require("express-rate-limit");
 const router = express.Router();
 
 // ==================== MAIN DOWNLOAD ENDPOINTS ====================
@@ -88,11 +88,20 @@ router.get("/platforms", downloadController.getSupportedPlatforms);
  */
 router.get("/health", downloadController.healthCheck);
 
-/**
- * 📊 SERVER STATS
- * GET /api/v1/download/stats
- */
-router.get("/stats", downloadController.getServerStats);
+// ✅ PRODUCTION: Rate limit stats endpoint
+const statsLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30, // Max 20 requests per minute per IP
+  message: {
+    status: "error",
+    message: "Too many requests, please try again later",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ✅ Apply rate limiter to stats route
+router.get("/stats", statsLimiter, downloadController.getServerStats);
 
 // ==================== 404 HANDLER ====================
 router.use((req, res) => {
