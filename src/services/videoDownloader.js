@@ -569,9 +569,9 @@ class VideoDownloaderService {
           if (platform === "tiktok") {
             fallbackArgs.push(
               "--extractor-args",
-              "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com;webpage_download=false",
-              "--user-agent",
-              "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+              "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
+              "--impersonate",
+              "chrome-110",
               "--add-header",
               "Referer:https://www.tiktok.com/",
             );
@@ -700,13 +700,14 @@ class VideoDownloaderService {
       };
       const maxHeight = heightMap[quality] || 720;
 
+      // ✅ NEW
       options.push(
         "-f",
         `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/b`,
         "--extractor-args",
-        "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com;webpage_download=false",
-        "--user-agent",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
+        "--impersonate",
+        "chrome-110",
         "--add-header",
         "Referer:https://www.tiktok.com/",
         "--add-header",

@@ -7,13 +7,17 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
     ca-certificates \
+    gcc \
+    python3-dev \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# ✅ Install yt-dlp with pre-release fixes
+# ✅ Install yt-dlp + curl-cffi (REQUIRED for TikTok impersonation)
 RUN pip install --no-cache-dir -U --pre "yt-dlp[default]"
+RUN pip install --no-cache-dir curl-cffi
 RUN yt-dlp --version
 
 WORKDIR /app
