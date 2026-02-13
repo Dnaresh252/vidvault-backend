@@ -521,7 +521,69 @@ class VideoDownloaderService {
 
       console.log(`⬇️ [${downloadId}] Downloading and merging audio+video...`);
 
-      await this.ytDlp.execPromise([url, ...ytDlpArgs]);
+      try {
+        await this.ytDlp.execPromise([url, ...ytDlpArgs]);
+      } catch (firstError) {
+        // 🔥 Smart fallback for format errors
+        const isFormatError =
+          firstError.message.includes("Requested format is not available") ||
+          firstError.message.includes("impersonation");
+
+        const isNetworkError =
+          firstError.message.includes("Could not connect") ||
+          firstError.message.includes("Failed to connect") ||
+          firstError.message.includes("Connection timed out") ||
+          firstError.message.includes("Failed to perform");
+
+        if (isNetworkError) {
+          // Network error = can't fix with fallback
+          // Just throw with user-friendly message
+          throw new Error(
+            platform === "tiktok" ? "TIKTOK_NETWORK_ERROR" : "NETWORK_ERROR",
+          );
+        }
+
+        if (isFormatError) {
+          console.log(
+            `⚠️ [${downloadId}] Format error, trying fallback for ${platform}...`,
+          );
+          await fs.remove(tempFile).catch(() => {});
+
+          const fallbackArgs = [
+            "-f",
+            "b",
+            "--no-playlist",
+            "--socket-timeout",
+            "30",
+            "--retries",
+            "5",
+            "--fragment-retries",
+            "5",
+            "--retry-sleep",
+            "3",
+            "--js-runtimes",
+            "node",
+          ];
+
+          // TikTok specific fallback headers
+          if (platform === "tiktok") {
+            fallbackArgs.push(
+              "--extractor-args",
+              "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com;webpage_download=false",
+              "--user-agent",
+              "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+              "--add-header",
+              "Referer:https://www.tiktok.com/",
+            );
+          }
+
+          fallbackArgs.push("-o", tempFile);
+          console.log(`🔄 [${downloadId}] Fallback download starting...`);
+          await this.ytDlp.execPromise([url, ...fallbackArgs]);
+        } else {
+          throw firstError;
+        }
+      }
 
       const stats = await fs.stat(tempFile);
       const fileSize = stats.size;
@@ -604,12 +666,17 @@ class VideoDownloaderService {
     }
   }
 
+  // 🔥 UPDATED: Line ~16 - Add this line to fix Instagram
+  // Replace this in your videoDownloader.js
+
   buildDownloadOptions({ quality, format, audioOnly, platform }) {
     const options = [];
 
+    // ============================================
+    // ✅ AUDIO ONLY
+    // ============================================
     if (audioOnly || format === "mp3") {
       options.push("-f", "bestaudio/best");
-
       if (format === "mp3") {
         options.push(
           "--extract-audio",
@@ -619,27 +686,160 @@ class VideoDownloaderService {
           "0",
         );
       }
-    } else {
-      // 🔥 OPTIMIZED: 720p for "high", 1080p for "highest"
-      const heightMap = {
-        highest: "1080",
-        high: "720", // 🔥 Changed from 1080!
-        medium: "720",
-        low: "480",
-      };
+    }
 
-      const maxHeight = heightMap[quality] || "720";
+    // ============================================
+    // ✅ TIKTOK - Pre-merged streams, special API
+    // ============================================
+    else if (platform === "tiktok") {
+      const heightMap = {
+        highest: 1080,
+        high: 720,
+        medium: 540,
+        low: 360,
+      };
+      const maxHeight = heightMap[quality] || 720;
 
       options.push(
         "-f",
-        `bv*[ext=mp4][height<=${maxHeight}]+ba[ext=m4a]/b[ext=mp4][height<=${maxHeight}]`,
+        `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/b`,
+        "--extractor-args",
+        "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com;webpage_download=false",
+        "--user-agent",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "--add-header",
+        "Referer:https://www.tiktok.com/",
+        "--add-header",
+        "Accept-Language:en-US,en;q=0.9",
       );
 
-      if (format === "mp4") {
-        options.push("--merge-output-format", "mp4");
+      // 🔥 Add TikTok cookies if available
+      cookieManager.addCookieOptions(options, platform);
+    }
+
+    // ============================================
+    // ✅ INSTAGRAM - FIXED WITH COOKIES 🔥
+    // ============================================
+    else if (platform === "instagram") {
+      const heightMap = {
+        highest: 1080,
+        high: 720,
+        medium: 480,
+        low: 360,
+      };
+      const maxHeight = heightMap[quality] || 720;
+
+      // 🔥 CRITICAL FIX: Use format selector that works with cookies
+      options.push(
+        "-f",
+        `bv*[ext=mp4][height<=${maxHeight}]+ba[ext=m4a]/b[ext=mp4][height<=${maxHeight}]/best`,
+        "--merge-output-format",
+        "mp4",
+        "--user-agent",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "--add-header",
+        "Referer:https://www.instagram.com/",
+        "--add-header",
+        "Accept-Language:en-US,en;q=0.9",
+        "--add-header",
+        "X-IG-App-ID:936619743392459",
+        "--add-header",
+        "X-Requested-With:XMLHttpRequest",
+      );
+
+      // 🔥 CRITICAL: Add Instagram cookies - This fixes the login error!
+      const hasCookies = cookieManager.addCookieOptions(options, platform);
+
+      if (!hasCookies) {
+        console.log(
+          "⚠️  [INSTAGRAM] No cookies! Download may fail. Please add INSTAGRAM_COOKIES env var.",
+        );
       }
     }
 
+    // ============================================
+    // ✅ TWITTER/X - Pre-merged + COOKIES
+    // ============================================
+    else if (platform === "twitter") {
+      const heightMap = {
+        highest: 1080,
+        high: 720,
+        medium: 480,
+        low: 360,
+      };
+      const maxHeight = heightMap[quality] || 720;
+
+      options.push(
+        "-f",
+        `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
+      );
+
+      // 🔥 Add Twitter cookies if available
+      cookieManager.addCookieOptions(options, platform);
+    }
+
+    // ============================================
+    // ✅ FACEBOOK - Pre-merged + COOKIES
+    // ============================================
+    else if (platform === "facebook") {
+      const heightMap = {
+        highest: 1080,
+        high: 720,
+        medium: 480,
+        low: 360,
+      };
+      const maxHeight = heightMap[quality] || 720;
+
+      options.push(
+        "-f",
+        `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
+      );
+
+      // 🔥 Add Facebook cookies if available
+      cookieManager.addCookieOptions(options, platform);
+    }
+
+    // ============================================
+    // ✅ REDDIT - Simple best
+    // ============================================
+    else if (platform === "reddit") {
+      options.push("-f", "best[ext=mp4]/best");
+    }
+
+    // ============================================
+    // ✅ YOUTUBE + VIMEO + ALL OTHERS
+    // ============================================
+    else {
+      const heightMap = {
+        highest: 1080,
+        high: 720,
+        medium: 720,
+        low: 480,
+      };
+      const maxHeight = heightMap[quality] || 720;
+
+      if (format === "mp4") {
+        options.push(
+          "-f",
+          `bv*[ext=mp4][height<=${maxHeight}]+ba[ext=m4a]/b[ext=mp4][height<=${maxHeight}]/best[height<=${maxHeight}]/best`,
+          "--merge-output-format",
+          "mp4",
+        );
+      } else if (format === "webm") {
+        options.push(
+          "-f",
+          `bv*[height<=${maxHeight}]+ba/best[height<=${maxHeight}]/best`,
+          "--merge-output-format",
+          "webm",
+        );
+      } else {
+        options.push("-f", `best[height<=${maxHeight}]/best`);
+      }
+    }
+
+    // ============================================
+    // ✅ UNIVERSAL FLAGS - ALL PLATFORMS
+    // ============================================
     options.push(
       "--no-playlist",
       "--socket-timeout",
@@ -656,13 +856,13 @@ class VideoDownloaderService {
       "node",
     );
 
+    // ✅ YouTube cookies (already working)
     if (platform === "youtube") {
-      cookieManager.addCookieOptions(options);
+      cookieManager.addCookieOptions(options, platform);
     }
 
     return options;
   }
-
   // 🔥 NEW: Estimate file size based on duration and quality
   estimateFileSize(durationSeconds, quality) {
     if (!durationSeconds || durationSeconds === 0) {

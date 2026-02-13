@@ -9,32 +9,25 @@ class InstantMetadataService {
     this.inflightRequests = new Map();
   }
 
-  /**
-   * 🚀 INSTANT METADATA - With Redis Caching
-   * Returns metadata in 0.1s if cached, 2-3s if fresh
-   */
+  // =====================================================
+  // 🚀 MAIN ENTRY
+  // =====================================================
   async getInstantMetadata(url) {
     const startTime = Date.now();
 
     try {
-      // 1️⃣ Detect platform
       const detection = platformDetector.detectPlatform(url);
-      if (!detection.success) {
-        throw new Error(detection.error);
-      }
+      if (!detection.success) throw new Error(detection.error);
 
       console.log(`\n🔍 Metadata request for: ${detection.platformName}`);
 
-      // 2️⃣ Check cache FIRST (0.1 seconds!)
+      // 1️⃣ CACHE FIRST
       const cached = await cacheService.getMetadata(url);
       if (cached) {
-        const duration = Date.now() - startTime;
-        console.log(`⚡ INSTANT response from cache (${duration}ms)`);
-
         return {
           success: true,
           cached: true,
-          responseTime: duration,
+          responseTime: Date.now() - startTime,
           data: {
             ...cached,
             platform: detection.platformName,
@@ -43,30 +36,23 @@ class InstantMetadataService {
           },
         };
       }
-      // 3️⃣ Cache MISS - check if already fetching (prevents duplicate yt-dlp calls)
-      if (this.inflightRequests.has(url)) {
-        console.log(`⏳ Waiting for in-flight request...`);
-        return await this.inflightRequests.get(url);
-      }
-      // 3️⃣ Cache MISS - Fetch from source (2-3 seconds)
-      console.log(
-        `📡 Fetching fresh metadata from ${detection.platformName}...`,
-      );
-      // Create the promise and store it so parallel requests share it
-      const fetchPromise = this.fetchMetadataFromSource(url, detection.platform)
-        .then(async (metadata) => {
-          await cacheService.setMetadata(url, metadata);
-          this.inflightRequests.delete(url);
-          return metadata;
-        })
-        .catch((err) => {
-          this.inflightRequests.delete(url); // always clean up
-          throw err;
-        });
 
-      this.inflightRequests.set(
+      // 2️⃣ IN-FLIGHT DEDUPE
+      if (this.inflightRequests.has(url)) {
+        console.log("⏳ Waiting for in-flight request...");
+        return this.inflightRequests.get(url);
+      }
+
+      console.log(`📡 Fetching fresh metadata...`);
+
+      const requestPromise = this.fetchMetadataFromSource(
         url,
-        fetchPromise.then((metadata) => ({
+        detection.platform,
+      ).then(async (metadata) => {
+        await cacheService.setMetadata(url, metadata);
+        this.inflightRequests.delete(url);
+
+        return {
           success: true,
           cached: false,
           responseTime: Date.now() - startTime,
@@ -76,271 +62,192 @@ class InstantMetadataService {
             platformKey: detection.platform,
             videoId: detection.videoId,
           },
-        })),
-      );
+        };
+      });
 
-      const metadata = await fetchPromise;
-
-      // 4️⃣ Cache for next time
-      await cacheService.setMetadata(url, metadata);
-
-      const duration = Date.now() - startTime;
-      console.log(`✅ Fresh metadata fetched (${duration}ms)`);
-
-      return {
-        success: true,
-        cached: false,
-        responseTime: duration,
-        data: {
-          ...metadata,
-          platform: detection.platformName,
-          platformKey: detection.platform,
-          videoId: detection.videoId,
-        },
-      };
+      this.inflightRequests.set(url, requestPromise);
+      return await requestPromise;
     } catch (error) {
-      const duration = Date.now() - startTime;
-      console.error(`❌ Metadata error (${duration}ms):`, error.message);
+      this.inflightRequests.delete(url);
 
       throw {
         success: false,
         error: this.getUserFriendlyError(error.message),
-        code: error.code || "METADATA_ERROR",
-        responseTime: duration,
+        code: "METADATA_ERROR",
       };
     }
   }
 
-  /**
-   * Fetch metadata from video source (YouTube, Instagram, etc.)
-   */
+  // =====================================================
+  // 🔥 METADATA FETCHER WITH MULTI-PLATFORM COOKIES
+  // =====================================================
   async fetchMetadataFromSource(url, platform) {
     const options = [
       "--dump-json",
-      "--no-playlist",
       "--skip-download",
-      "--socket-timeout",
-      "15",
+      "--no-playlist",
+      "--no-warnings",
       "--retries",
       "3",
-      "--no-warnings",
+      "--socket-timeout",
+      "20",
       "--js-runtimes",
       "node",
     ];
 
-    // Add cookies only for YouTube
+    // ========= PLATFORM-SPECIFIC CONFIGS =========
+
     if (platform === "youtube") {
-      cookieManager.addCookieOptions(options);
+      cookieManager.addCookieOptions(options, platform);
     }
 
-    // Execute with timeout (15 seconds max)
+    if (platform === "instagram") {
+      options.push(
+        "--user-agent",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "--add-header",
+        "Referer:https://www.instagram.com/",
+        "--add-header",
+        "X-IG-App-ID:936619743392459",
+      );
+
+      // 🔥 CRITICAL: Add Instagram cookies for metadata
+      cookieManager.addCookieOptions(options, platform);
+    }
+
+    if (platform === "tiktok") {
+      options.push(
+        "--user-agent",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
+        "--add-header",
+        "Referer:https://www.tiktok.com/",
+      );
+
+      cookieManager.addCookieOptions(options, platform);
+    }
+
+    if (platform === "twitter") {
+      cookieManager.addCookieOptions(options, platform);
+    }
+
+    if (platform === "facebook") {
+      cookieManager.addCookieOptions(options, platform);
+    }
+
     const result = await Promise.race([
       this.ytDlp.execPromise([url, ...options]),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Metadata timeout")), 15000),
+      new Promise((_, r) =>
+        setTimeout(() => r(new Error("Metadata timeout")), 15000),
       ),
     ]);
 
-    const rawData = JSON.parse(result);
+    const raw = JSON.parse(result);
 
-    // Parse upload date
-    let uploadDate = null;
-    if (rawData.upload_date) {
-      try {
-        const dateStr = rawData.upload_date.toString();
-        if (dateStr.length === 8) {
-          const year = parseInt(dateStr.substring(0, 4));
-          const month = parseInt(dateStr.substring(4, 6)) - 1;
-          const day = parseInt(dateStr.substring(6, 8));
-          uploadDate = new Date(year, month, day).toISOString();
-        }
-      } catch (e) {
-        uploadDate = null;
-      }
-    }
+    return this.cleanMetadata(raw, url);
+  }
 
-    // Get best thumbnail
-    let thumbnail = null;
-    if (rawData.thumbnails && rawData.thumbnails.length > 0) {
-      const thumbnails = rawData.thumbnails.sort(
-        (a, b) => (b.width || 0) - (a.width || 0),
-      );
-      thumbnail = thumbnails[0].url;
-    } else if (rawData.thumbnail) {
-      thumbnail = rawData.thumbnail;
-    }
+  // =====================================================
+  // 🧹 CLEAN METADATA
+  // =====================================================
+  cleanMetadata(raw, url) {
+    const thumbnail = this.extractThumbnail(raw);
 
-    // Extract available formats for download options
-    const availableFormats = this.parseAvailableFormats(rawData);
-
-    // Return clean metadata
     return {
-      title: rawData.title || "Unknown Title",
-      description: (rawData.description || "").substring(0, 500),
-      thumbnail: thumbnail,
-      duration: rawData.duration || 0,
-      durationFormatted: this.formatDuration(rawData.duration || 0),
-      viewCount: rawData.view_count || 0,
-      viewCountFormatted: this.formatNumber(rawData.view_count || 0),
-      uploadDate: uploadDate,
-      uploader: rawData.uploader || "Unknown",
-      uploaderVerified: rawData.uploader_verified || false,
-      availableFormats: availableFormats,
-      webpageUrl: rawData.webpage_url || url,
+      title: raw.title || "Unknown Title",
+      description: (raw.description || "").slice(0, 500),
+      thumbnail,
+      duration: raw.duration || 0,
+      durationFormatted: this.formatDuration(raw.duration || 0),
+      viewCount: raw.view_count || 0,
+      viewCountFormatted: this.formatNumber(raw.view_count || 0),
+      uploadDate: this.parseDate(raw.upload_date),
+      uploader: raw.uploader || "Unknown",
+      uploaderVerified: raw.uploader_verified || false,
+      availableFormats: this.parseAvailableFormats(raw),
+      webpageUrl: raw.webpage_url || url,
     };
   }
 
-  /**
-   * Parse available download formats - ONLY POPULAR QUALITIES
-   * Returns: 1080p, 720p, 480p, 360p (video) + High/Medium quality (audio)
-   */
-  parseAvailableFormats(rawData) {
-    const formats = {
-      video: [],
-      audio: [],
-    };
-
-    if (!rawData.formats) {
-      // Default fallback - most popular options
-      return {
-        video: [
-          {
-            quality: "1080p",
-            format: "mp4",
-            label: "Full HD",
-            available: true,
-          },
-          { quality: "720p", format: "mp4", label: "HD", available: true },
-          { quality: "480p", format: "mp4", label: "SD", available: true },
-          { quality: "360p", format: "mp4", label: "Low", available: true },
-        ],
-        audio: [
-          {
-            quality: "high",
-            format: "mp3",
-            label: "High Quality (320kbps)",
-            available: true,
-          },
-          {
-            quality: "medium",
-            format: "mp3",
-            label: "Medium Quality (192kbps)",
-            available: true,
-          },
-        ],
-      };
+  // =====================================================
+  // 🖼️ UNIVERSAL THUMBNAIL EXTRACTOR
+  // =====================================================
+  extractThumbnail(raw) {
+    if (raw.thumbnails?.length) {
+      return raw.thumbnails.sort((a, b) => (b.width || 0) - (a.width || 0))[0]
+        .url;
     }
 
-    // Parse video formats
-    const videoFormats = rawData.formats.filter(
-      (f) => f.vcodec && f.vcodec !== "none" && f.height,
+    return (
+      raw.thumbnail ||
+      raw.display_url ||
+      raw["og:image"] ||
+      "/default-thumbnail.jpg"
     );
-
-    const uniqueHeights = [...new Set(videoFormats.map((f) => f.height))];
-    uniqueHeights.sort((a, b) => b - a);
-
-    // Only include POPULAR resolutions
-    const popularResolutions = [
-      { height: 1080, quality: "1080p", label: "Full HD" },
-      { height: 720, quality: "720p", label: "HD" },
-      { height: 480, quality: "480p", label: "SD" },
-      { height: 360, quality: "360p", label: "Low" },
-    ];
-
-    popularResolutions.forEach(({ height, quality, label }) => {
-      // Check if this resolution exists in available formats
-      const hasResolution = uniqueHeights.some(
-        (h) => h >= height && h < height + 180,
-      );
-
-      if (hasResolution || height <= 480) {
-        // Always show 480p and 360p as fallback
-        formats.video.push({
-          quality,
-          format: "mp4",
-          label,
-          height,
-          available: hasResolution,
-        });
-      }
-    });
-
-    // Audio formats - only 2 popular options
-    formats.audio = [
-      {
-        quality: "high",
-        format: "mp3",
-        label: "High Quality (320kbps)",
-        available: true,
-      },
-      {
-        quality: "medium",
-        format: "mp3",
-        label: "Medium Quality (192kbps)",
-        available: true,
-      },
-    ];
-
-    return formats;
   }
 
-  /**
-   * Format duration (seconds → "MM:SS" or "HH:MM:SS")
-   */
-  formatDuration(seconds) {
-    if (!seconds || seconds === 0) return "0:00";
-
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = Math.floor(seconds % 60);
-
-    if (hrs > 0) {
-      return `${hrs}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-    }
-    return `${mins}:${secs.toString().padStart(2, "0")}`;
-  }
-
-  /**
-   * Format numbers (1234567 → "1.2M")
-   */
-  formatNumber(num) {
-    if (!num || num === 0) return "0";
-
-    if (num >= 1000000000) {
-      return (num / 1000000000).toFixed(1) + "B";
-    }
-    if (num >= 1000000) {
-      return (num / 1000000).toFixed(1) + "M";
-    }
-    if (num >= 1000) {
-      return (num / 1000).toFixed(1) + "K";
-    }
-    return num.toString();
-  }
-
-  /**
-   * User-friendly error messages
-   */
-  getUserFriendlyError(errorMessage) {
-    const errorMap = {
-      private: "This video is private and cannot be accessed.",
-      unavailable: "This video is no longer available.",
-      removed: "This video has been removed.",
-      "age-restricted": "This video is age-restricted.",
-      copyright: "This video is protected by copyright.",
-      "geo-restricted": "This video is not available in your region.",
-      timeout: "Request timed out. Please try again.",
-      "members-only": "This video is only available to channel members.",
+  // =====================================================
+  // 📦 FORMATS
+  // =====================================================
+  parseAvailableFormats(raw) {
+    return {
+      video: [
+        { quality: "1080p", format: "mp4", label: "Full HD" },
+        { quality: "720p", format: "mp4", label: "HD" },
+        { quality: "480p", format: "mp4", label: "SD" },
+        { quality: "360p", format: "mp4", label: "Low" },
+      ],
+      audio: [
+        { quality: "high", format: "mp3", label: "High (320kbps)" },
+        { quality: "medium", format: "mp3", label: "Medium (192kbps)" },
+      ],
     };
+  }
 
-    const lowerError = errorMessage.toLowerCase();
-    for (const [key, message] of Object.entries(errorMap)) {
-      if (lowerError.includes(key.toLowerCase())) {
-        return message;
-      }
-    }
+  // =====================================================
+  // ⏱️ HELPERS
+  // =====================================================
+  parseDate(dateStr) {
+    if (!dateStr || dateStr.length !== 8) return null;
+    return new Date(
+      dateStr.slice(0, 4),
+      dateStr.slice(4, 6) - 1,
+      dateStr.slice(6, 8),
+    ).toISOString();
+  }
 
-    return "Unable to fetch video information. Please check the URL.";
+  formatDuration(s) {
+    if (!s) return "0:00";
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = Math.floor(s % 60);
+    return h
+      ? `${h}:${m.toString().padStart(2, "0")}:${sec
+          .toString()
+          .padStart(2, "0")}`
+      : `${m}:${sec.toString().padStart(2, "0")}`;
+  }
+
+  formatNumber(n) {
+    if (!n) return "0";
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return n.toString();
+  }
+
+  // =====================================================
+  // ❌ ERRORS
+  // =====================================================
+  getUserFriendlyError(msg) {
+    msg = msg.toLowerCase();
+
+    if (msg.includes("private")) return "Private video";
+    if (msg.includes("unavailable")) return "Video unavailable";
+    if (msg.includes("copyright")) return "Copyright protected";
+    if (msg.includes("timeout")) return "Server timeout";
+    if (msg.includes("login")) return "Login required";
+
+    return "Failed to fetch video info";
   }
 }
 
