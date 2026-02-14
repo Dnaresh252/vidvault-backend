@@ -98,6 +98,7 @@ class InstantMetadataService {
     // ========= PLATFORM-SPECIFIC CONFIGS =========
 
     if (platform === "youtube") {
+      options.push("--geo-bypass-country", "IN");
       cookieManager.addCookieOptions(options, platform);
     }
 

@@ -859,9 +859,9 @@ class VideoDownloaderService {
 
     // ✅ YouTube cookies (already working)
     if (platform === "youtube") {
+      options.push("--geo-bypass-country", "IN");
       cookieManager.addCookieOptions(options, platform);
     }
-
     return options;
   }
   // 🔥 NEW: Estimate file size based on duration and quality
