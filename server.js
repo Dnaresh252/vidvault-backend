@@ -78,6 +78,40 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 // Trust proxy (important for rate limiting behind reverse proxy)
 app.set("trust proxy", 1);
 
+// ============================================================
+// 🔥 FIX: robots.txt - MUST BE BEFORE ALL OTHER ROUTES
+// Googlebot was hitting backend and getting 404 - hurting SEO!
+// ============================================================
+app.get("/robots.txt", (req, res) => {
+  res.setHeader("Content-Type", "text/plain");
+  res.setHeader("Cache-Control", "public, max-age=86400"); // Cache 24 hours
+  res.send(
+    `# VidVault - Free Video Downloader
+# https://www.vidvaults.com
+
+User-agent: *
+Allow: /
+
+# Block API and admin from indexing
+Disallow: /api/
+Disallow: /admin/
+Disallow: /health
+
+# Host
+Host: https://www.vidvaults.com
+
+# Sitemap
+Sitemap: https://www.vidvaults.com/sitemap.xml`,
+  );
+});
+
+// 🔥 Redirect sitemap to frontend
+app.get("/sitemap.xml", (req, res) => {
+  res.redirect(301, "https://www.vidvaults.com/sitemap.xml");
+});
+
+// ============================================================
+
 // Health check endpoint with dependency checks
 app.get("/health", async (req, res) => {
   const mongoose = require("mongoose");
@@ -89,7 +123,7 @@ app.get("/health", async (req, res) => {
   const r2Status = videoDownloader.r2Working ? "connected" : "disconnected";
   const cacheStatus = (await cacheService.ping())
     ? "connected"
-    : "disconnected"; // 🚀 NEW
+    : "disconnected";
 
   const isHealthy = mongoStatus === "connected";
 
@@ -102,7 +136,7 @@ app.get("/health", async (req, res) => {
     dependencies: {
       mongodb: mongoStatus,
       r2Storage: r2Status,
-      redisCache: cacheStatus, // 🚀 NEW
+      redisCache: cacheStatus,
     },
   });
 });
@@ -112,13 +146,12 @@ app.use("/api/v1", apiLimiter);
 
 // API routes
 app.use("/api/v1/download", require("./src/routes/download"));
-app.use("/api/v1/instant", require("./src/routes/Instantroutes")); // 🚀 NEW: Instant metadata
+app.use("/api/v1/instant", require("./src/routes/Instantroutes"));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error("Error:", err);
 
-  // Don't leak error details in production
   const errorResponse = {
     status: "error",
     message:
@@ -127,7 +160,6 @@ app.use((err, req, res, next) => {
         : err.message,
   };
 
-  // Add stack trace only in development
   if (process.env.NODE_ENV !== "production") {
     errorResponse.stack = err.stack;
   }
@@ -168,7 +200,6 @@ const gracefulShutdown = async (signal) => {
     }
   });
 
-  // Force shutdown after 30 seconds
   setTimeout(() => {
     console.error("⚠️ Forced shutdown after 30s timeout");
     process.exit(1);
@@ -178,9 +209,8 @@ const gracefulShutdown = async (signal) => {
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
-// Handle unhandled promise rejections
 process.on("unhandledRejection", (err) => {
-  console.error("Unhandled Rejection:", err.message); // log but don't crash
+  console.error("Unhandled Rejection:", err.message);
 });
 
 module.exports = app;

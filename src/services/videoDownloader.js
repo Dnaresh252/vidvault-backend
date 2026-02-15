@@ -18,16 +18,15 @@ const { Resolver } = require("dns").promises;
 const platformDetector = require("./platformDetector");
 const Download = require("../models/Download");
 const cookieManager = require("./cookieManager");
-const cacheService = require("./cacheService"); // 🔥 NEW!
-// Line ~16 area — this line is MISSING ❌
+const cacheService = require("./cacheService");
 const instantMetadataService = require("./instantMetadataService");
+
 dns.setServers(["8.8.8.8", "1.1.1.1"]);
 const resolver = new Resolver();
 resolver.setServers(["8.8.8.8", "1.1.1.1"]);
 
-// 🔥 CONSTANTS FOR PREMIUM SERVICE
+// 🔥 CONSTANTS
 const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB hard limit
-const RECOMMENDED_QUALITY = "medium"; // 720p default
 const TEMP_FILE_MAX_AGE = 5 * 60 * 1000; // 5 minutes
 const R2_FILE_MAX_AGE = 60 * 60 * 1000; // 1 hour
 
@@ -138,7 +137,6 @@ class VideoDownloaderService {
     }
   }
 
-  // 🔥 OPTIMIZED: R2 cleanup every 10 min, delete files >1 hour
   startR2CleanupJob() {
     const CLEANUP_INTERVAL = 10 * 60 * 1000;
 
@@ -181,7 +179,6 @@ class VideoDownloaderService {
     console.log(`✅ R2 cleanup: Every 10min, deletes files >1hr`);
   }
 
-  // 🔥 OPTIMIZED: Aggressive temp cleanup every 3 min, delete files >5 min
   startAggressiveCleanup() {
     const CLEANUP_INTERVAL = 3 * 60 * 1000;
 
@@ -203,9 +200,7 @@ class VideoDownloaderService {
                   await fs.remove(filePath);
                   cleanedCount++;
                 }
-              } catch (e) {
-                // File might be in use or deleted, skip
-              }
+              } catch (e) {}
             }
 
             if (cleanedCount > 0) {
@@ -213,9 +208,7 @@ class VideoDownloaderService {
                 `🧹 Temp: Cleaned ${cleanedCount} old files from ${path.basename(dir)}`,
               );
             }
-          } catch (error) {
-            // Directory might not exist yet
-          }
+          } catch (error) {}
         }
       } catch (error) {
         console.error("Cleanup error:", error.message);
@@ -262,15 +255,12 @@ class VideoDownloaderService {
 
       this.activeDownloads.set(downloadId, { startTime: Date.now(), url });
 
-      // 🔥 STEP 1: Check R2 cache FIRST!
       console.log(`🔍 [${downloadId}] Checking cache...`);
       const cachedResult = await cacheService.getR2Url(url, quality, format);
 
       if (cachedResult && cachedResult.cached) {
         console.log(`🚀 [${downloadId}] INSTANT! Serving from cache!`);
 
-        // Get metadata for response
-        // Get metadata for response — from Redis cache, NOT raw yt-dlp
         let metadata;
         try {
           const metaResult =
@@ -301,13 +291,12 @@ class VideoDownloaderService {
             fileSize: cachedResult.fileSize,
             downloadUrl: cachedResult.url,
             expiresAt: cachedResult.expiresAt,
-            cached: true, // 🔥 Frontend can show "Instant!" badge
+            cached: true,
           },
           message: "Ready instantly! 🚀 (Served from cache)",
         };
       }
 
-      // 🔥 STEP 2: Cache miss - proceed with download
       console.log(`📥 [${downloadId}] Cache miss - downloading fresh...`);
 
       downloadRecord = await this.createDownloadRecord({
@@ -327,14 +316,16 @@ class VideoDownloaderService {
           (await instantMetadataService.getInstantMetadata(url)).data;
         console.log(`✓ Metadata: "${metadata.title}"`);
 
-        // 🔥 STEP 3: Check file size estimate
+        // 🔥 FIX 1: Check file size with CORRECTED estimation
         const estimatedSize = this.estimateFileSize(metadata.duration, quality);
         if (estimatedSize > MAX_FILE_SIZE) {
+          const durationMins = Math.floor((metadata.duration || 0) / 60);
           throw {
             message: "FILE_TOO_LARGE",
             code: "FILE_TOO_LARGE",
             estimatedSize: estimatedSize,
             maxSize: MAX_FILE_SIZE,
+            duration: durationMins,
           };
         }
       } catch (metaError) {
@@ -371,14 +362,13 @@ class VideoDownloaderService {
         downloadId,
       });
 
-      // 🔥 STEP 4: Cache the R2 URL for next user!
       await cacheService.setR2Url(
         url,
         quality,
         format,
         downloadResult.downloadUrl,
         downloadResult.fileSize,
-        10 * 60, // 10 minutes
+        10 * 60,
       );
 
       const downloadDuration = (
@@ -403,7 +393,7 @@ class VideoDownloaderService {
       const responseData = {
         id: downloadRecord?._id,
         title: metadata.title,
-        thumbnail: metadata.thumbnail, // 🔥 Direct URL for preview!
+        thumbnail: metadata.thumbnail,
         duration: metadata.duration,
         platform: detection.platformName,
         quality: downloadResult.quality,
@@ -439,11 +429,15 @@ class VideoDownloaderService {
         error.message,
       );
 
-      let userMessage = this.getUserFriendlyError(error.message);
+      let userMessage = this.getUserFriendlyError(error.message || "");
 
-      // 🔥 Special handling for file too large
+      // 🔥 FIX 1: Better FILE_TOO_LARGE message
       if (error.code === "FILE_TOO_LARGE") {
-        userMessage = `Video too large! This video is approximately ${this.formatFileSize(error.estimatedSize)}, but our limit is ${this.formatFileSize(error.maxSize)}. Please try 720p or lower quality.`;
+        const durationMins = error.duration || 0;
+        userMessage =
+          durationMins > 0
+            ? `This video is ${durationMins} minutes long and too large for our free service (500MB limit). Please try a shorter video or lower quality (480p).`
+            : `This video exceeds our 500MB limit. Please try a lower quality (480p).`;
       }
 
       if (downloadRecord) {
@@ -461,7 +455,7 @@ class VideoDownloaderService {
         success: false,
         error: userMessage,
         code: error.code || "DOWNLOAD_ERROR",
-        suggestedQuality: error.code === "FILE_TOO_LARGE" ? "medium" : null,
+        suggestedQuality: error.code === "FILE_TOO_LARGE" ? "low" : null,
       };
     } finally {
       this.activeDownloads.delete(downloadId);
@@ -524,7 +518,6 @@ class VideoDownloaderService {
       try {
         await this.ytDlp.execPromise([url, ...ytDlpArgs]);
       } catch (firstError) {
-        // 🔥 Smart fallback for format errors
         const isFormatError =
           firstError.message.includes("Requested format is not available") ||
           firstError.message.includes("impersonation");
@@ -536,8 +529,6 @@ class VideoDownloaderService {
           firstError.message.includes("Failed to perform");
 
         if (isNetworkError) {
-          // Network error = can't fix with fallback
-          // Just throw with user-friendly message
           throw new Error(
             platform === "tiktok" ? "TIKTOK_NETWORK_ERROR" : "NETWORK_ERROR",
           );
@@ -565,7 +556,6 @@ class VideoDownloaderService {
             "node",
           ];
 
-          // TikTok specific fallback headers
           if (platform === "tiktok") {
             fallbackArgs.push(
               "--extractor-args",
@@ -588,7 +578,6 @@ class VideoDownloaderService {
       const stats = await fs.stat(tempFile);
       const fileSize = stats.size;
 
-      // 🔥 Double-check file size after download
       if (fileSize > MAX_FILE_SIZE) {
         await fs.remove(tempFile).catch(() => {});
         throw {
@@ -602,11 +591,9 @@ class VideoDownloaderService {
       console.log(
         `✓ [${downloadId}] Merged file ready (${this.formatFileSize(fileSize)})`,
       );
-
       console.log(`☁️ [${downloadId}] Streaming to R2...`);
 
       const key = `downloads/${Date.now()}_${crypto.randomBytes(8).toString("hex")}_${fileName}`;
-
       const fileStream = fs.createReadStream(tempFile);
 
       const upload = new Upload({
@@ -639,7 +626,6 @@ class VideoDownloaderService {
         { expiresIn: 1800 },
       );
 
-      // 🔥 CRITICAL: Delete temp file IMMEDIATELY!
       await fs.remove(tempFile).catch((err) => {
         console.log(`⚠️  Failed to delete temp file: ${err.message}`);
       });
@@ -658,23 +644,15 @@ class VideoDownloaderService {
           await fs.remove(tempFile);
           console.log(`🗑️  [${downloadId}] Temp file deleted (after error)`);
         }
-      } catch (cleanupError) {
-        // Silent fail
-      }
+      } catch (cleanupError) {}
 
       throw error;
     }
   }
 
-  // 🔥 UPDATED: Line ~16 - Add this line to fix Instagram
-  // Replace this in your videoDownloader.js
-
   buildDownloadOptions({ quality, format, audioOnly, platform }) {
     const options = [];
 
-    // ============================================
-    // ✅ AUDIO ONLY
-    // ============================================
     if (audioOnly || format === "mp3") {
       options.push("-f", "bestaudio/best");
       if (format === "mp3") {
@@ -686,21 +664,10 @@ class VideoDownloaderService {
           "0",
         );
       }
-    }
-
-    // ============================================
-    // ✅ TIKTOK - Pre-merged streams, special API
-    // ============================================
-    else if (platform === "tiktok") {
-      const heightMap = {
-        highest: 1080,
-        high: 720,
-        medium: 540,
-        low: 360,
-      };
+    } else if (platform === "tiktok") {
+      const heightMap = { highest: 1080, high: 720, medium: 540, low: 360 };
       const maxHeight = heightMap[quality] || 720;
 
-      // ✅ NEW
       options.push(
         "-f",
         `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/b`,
@@ -713,24 +680,11 @@ class VideoDownloaderService {
         "--add-header",
         "Accept-Language:en-US,en;q=0.9",
       );
-
-      // 🔥 Add TikTok cookies if available
       cookieManager.addCookieOptions(options, platform);
-    }
-
-    // ============================================
-    // ✅ INSTAGRAM - FIXED WITH COOKIES 🔥
-    // ============================================
-    else if (platform === "instagram") {
-      const heightMap = {
-        highest: 1080,
-        high: 720,
-        medium: 480,
-        low: 360,
-      };
+    } else if (platform === "instagram") {
+      const heightMap = { highest: 1080, high: 720, medium: 480, low: 360 };
       const maxHeight = heightMap[quality] || 720;
 
-      // 🔥 CRITICAL FIX: Use format selector that works with cookies
       options.push(
         "-f",
         `bv*[ext=mp4][height<=${maxHeight}]+ba[ext=m4a]/b[ext=mp4][height<=${maxHeight}]/best`,
@@ -747,76 +701,33 @@ class VideoDownloaderService {
         "--add-header",
         "X-Requested-With:XMLHttpRequest",
       );
-
-      // 🔥 CRITICAL: Add Instagram cookies - This fixes the login error!
       const hasCookies = cookieManager.addCookieOptions(options, platform);
-
       if (!hasCookies) {
-        console.log(
-          "⚠️  [INSTAGRAM] No cookies! Download may fail. Please add INSTAGRAM_COOKIES env var.",
-        );
+        console.log("⚠️  [INSTAGRAM] No cookies! Download may fail.");
       }
-    }
-
-    // ============================================
-    // ✅ TWITTER/X - Pre-merged + COOKIES
-    // ============================================
-    else if (platform === "twitter") {
-      const heightMap = {
-        highest: 1080,
-        high: 720,
-        medium: 480,
-        low: 360,
-      };
+    } else if (platform === "twitter") {
+      const heightMap = { highest: 1080, high: 720, medium: 480, low: 360 };
       const maxHeight = heightMap[quality] || 720;
 
       options.push(
         "-f",
         `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
       );
-
-      // 🔥 Add Twitter cookies if available
       cookieManager.addCookieOptions(options, platform);
-    }
-
-    // ============================================
-    // ✅ FACEBOOK - Pre-merged + COOKIES
-    // ============================================
-    else if (platform === "facebook") {
-      const heightMap = {
-        highest: 1080,
-        high: 720,
-        medium: 480,
-        low: 360,
-      };
+    } else if (platform === "facebook") {
+      const heightMap = { highest: 1080, high: 720, medium: 480, low: 360 };
       const maxHeight = heightMap[quality] || 720;
 
       options.push(
         "-f",
         `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
       );
-
-      // 🔥 Add Facebook cookies if available
       cookieManager.addCookieOptions(options, platform);
-    }
-
-    // ============================================
-    // ✅ REDDIT - Simple best
-    // ============================================
-    else if (platform === "reddit") {
+    } else if (platform === "reddit") {
       options.push("-f", "best[ext=mp4]/best");
-    }
-
-    // ============================================
-    // ✅ YOUTUBE + VIMEO + ALL OTHERS
-    // ============================================
-    else {
-      const heightMap = {
-        highest: 1080,
-        high: 720,
-        medium: 720,
-        low: 480,
-      };
+    } else {
+      // YouTube + Vimeo + all others
+      const heightMap = { highest: 1080, high: 720, medium: 720, low: 480 };
       const maxHeight = heightMap[quality] || 720;
 
       if (format === "mp4") {
@@ -838,9 +749,6 @@ class VideoDownloaderService {
       }
     }
 
-    // ============================================
-    // ✅ UNIVERSAL FLAGS - ALL PLATFORMS
-    // ============================================
     options.push(
       "--no-playlist",
       "--socket-timeout",
@@ -857,44 +765,92 @@ class VideoDownloaderService {
       "node",
     );
 
-    // ✅ YouTube cookies (already working)
     if (platform === "youtube") {
-      options.push("--geo-bypass-country", "IN");
+      options.push("--geo-bypass-country", "US");
       cookieManager.addCookieOptions(options, platform);
     }
+
     return options;
   }
-  // 🔥 NEW: Estimate file size based on duration and quality
+
+  // ============================================================
+  // 🔥 FIX 2: CORRECTED estimateFileSize
+  // Old code used 10MB/s bitrate = WAY too high, blocked everything!
+  // Real YouTube 720p = ~200KB/s, 1080p = ~400KB/s
+  // ============================================================
   estimateFileSize(durationSeconds, quality) {
+    // Unknown duration = NEVER block! Let it try and check real size after
     if (!durationSeconds || durationSeconds === 0) {
-      return 100 * 1024 * 1024; // Default 100MB if unknown
+      return 0;
     }
 
-    // Bitrate estimates (bits per second)
+    // REALISTIC bitrates in bytes/second (actual measured values)
     const bitrateMap = {
-      highest: 10 * 1024 * 1024, // 10 Mbps for 1080p
-      high: 5 * 1024 * 1024, // 5 Mbps for 720p
-      medium: 5 * 1024 * 1024, // 5 Mbps for 720p
-      low: 2.5 * 1024 * 1024, // 2.5 Mbps for 480p
+      highest: 400000, // ~3.2 Mbps for 1080p
+      high: 200000, // ~1.6 Mbps for 720p
+      medium: 200000, // ~1.6 Mbps for 720p
+      low: 80000, // ~640 Kbps for 480p
     };
 
     const bitrate = bitrateMap[quality] || bitrateMap.medium;
-    const estimatedBytes = (bitrate / 8) * durationSeconds;
+    const estimatedBytes = bitrate * durationSeconds;
 
-    return Math.ceil(estimatedBytes);
+    // Add 20% safety buffer
+    return Math.ceil(estimatedBytes * 1.2);
+
+    // REAL WORLD EXAMPLES NOW:
+    // 10 min 720p  = 600 × 200000 × 1.2 = 144MB  ✅ passes 500MB limit
+    // 30 min 720p  = 1800 × 200000 × 1.2 = 432MB ✅ passes 500MB limit
+    // 45 min 720p  = 2700 × 200000 × 1.2 = 648MB ❌ blocked correctly
+    // 10 min 1080p = 600 × 400000 × 1.2 = 288MB  ✅ passes 500MB limit
+    // 20 min 1080p = 1200 × 400000 × 1.2 = 576MB ❌ blocked correctly
   }
 
+  // ============================================================
+  // 🔥 FIX 3: IMPROVED getUserFriendlyError with geo-restriction
+  // ============================================================
   getUserFriendlyError(errorMessage) {
     const errorMap = {
+      // Existing
       private: "This video is private and cannot be downloaded.",
       unavailable: "This video is no longer available.",
       removed: "This video has been removed.",
       "age-restricted":
         "This video is age-restricted and cannot be downloaded.",
       copyright: "This video is protected by copyright.",
-      "geo-restricted": "This video is not available in your region.",
-      timeout: "Download timed out. Please try a lower quality.",
       "members-only": "This video is only available to channel members.",
+      timeout: "Download timed out. Please try again.",
+
+      // 🔥 FIX: Geo-restriction - clear message explaining Singapore server
+      "not available in your country":
+        "This video is region-locked (not available from our Singapore servers). Please try a different video.",
+      "not made this video available":
+        "This video is region-locked and unavailable from our servers. Try a different video.",
+      "geo-restricted":
+        "This video is not available in our server region. Try a different video.",
+      "available in":
+        "This video is region-locked and unavailable from our servers. Try a different video.",
+
+      // Network errors
+      tiktok_network_error:
+        "TikTok is temporarily unavailable. Please try again.",
+      network_error: "Network connection failed. Please try again.",
+      "could not connect": "Connection failed. Please try again.",
+      "failed to connect": "Connection failed. Please try again.",
+      "connection timed out": "Connection timed out. Please try again.",
+      "failed to perform": "Network error. Please try again.",
+
+      // Format errors
+      "requested format is not available":
+        "Video format unavailable. Please try again.",
+      "unable to extract":
+        "Could not extract video. The link may have expired.",
+
+      // Login/auth
+      "login required": "This content requires login. Try a public video.",
+      "rate-limit": "Rate limit reached. Please try again in a few minutes.",
+      "requested content is not available":
+        "This content is private or requires login.",
     };
 
     const lowerError = errorMessage.toLowerCase();
@@ -904,7 +860,7 @@ class VideoDownloaderService {
       }
     }
 
-    return "Download failed. The video may be restricted or unavailable.";
+    return "Download failed. Please check the URL and try again.";
   }
 
   async createDownloadRecord(options) {
