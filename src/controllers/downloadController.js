@@ -726,7 +726,6 @@ const path = require("path");
 const fs = require("fs-extra");
 const fetch = require("node-fetch");
 const Download = require("../models/Download");
-
 // ----------------------
 // 🔥 FIXED: Download with Real-time Progress (SSE)
 // ----------------------
@@ -835,69 +834,23 @@ exports.downloadVideoWithProgress = async (req, res) => {
       }
 
       await new Promise((resolve) => setTimeout(resolve, 600));
-
-      // Step 3: Downloading (35% -> 70%)
+      // Step 3: REAL DOWNLOAD with REAL PROGRESS
       if (clientDisconnected) return;
       sendProgress({
         step: 3,
         status: "downloading",
         message: "Starting download...",
-        progress: 35,
+        progress: 20,
         stage: "Initializing Download",
         title: metadata.title || "Video",
         thumbnail: metadata.thumbnail,
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 800));
-
-      // Simulate realistic download progress
-      const progressSteps = [40, 45, 50, 55, 60, 65, 70];
-      for (const prog of progressSteps) {
-        if (clientDisconnected) break;
-
-        sendProgress({
-          step: 3,
-          status: "downloading",
-          message: `Downloading video... ${prog}%`,
-          progress: prog,
-          stage: "Downloading",
-          downloaded: `${Math.floor((prog / 100) * 50)} MB`,
-          total: "50 MB",
-          speed: `${(Math.random() * 3 + 2).toFixed(1)} MB/s`,
-          timeLeft: `${Math.floor((70 - prog) / 5)}s`,
-        });
-
-        await new Promise((resolve) => setTimeout(resolve, 700));
-      }
-
-      if (clientDisconnected) return;
-
-      // Step 4: Processing (75-90%)
-      sendProgress({
-        step: 4,
-        status: "processing",
-        message: "Processing audio & video...",
-        progress: 75,
-        stage: "Merging Streams",
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      if (clientDisconnected) return;
-
-      // Actual download happens here
+      // ✅ REAL DOWNLOAD with progress callback
       const userIP = req.ip || req.connection.remoteAddress;
       const userAgent = req.get("User-Agent");
 
-      sendProgress({
-        step: 4,
-        status: "processing",
-        message: "Finalizing download...",
-        progress: 85,
-        stage: "Almost Done",
-      });
-
-      const downloadResult = await videoDownloader.downloadVideo({
+      const downloadResult = await videoDownloader.downloadVideoWithProgress({
         url: url.trim(),
         quality,
         format,
@@ -906,6 +859,26 @@ exports.downloadVideoWithProgress = async (req, res) => {
         userAgent,
         includeThumbnail,
         prefetchedMetadata: metadata,
+
+        // ✅ REAL PROGRESS CALLBACK
+        progressCallback: (realProgress) => {
+          if (!clientDisconnected) {
+            // Map yt-dlp progress (0-100%) to our range (20-95%)
+            const mappedProgress = 20 + realProgress.progress * 0.75;
+
+            sendProgress({
+              step: 3,
+              status: "downloading",
+              message: `Downloading... ${realProgress.progress.toFixed(1)}%`,
+              progress: mappedProgress,
+              stage: realProgress.stage || "Downloading",
+              downloaded: realProgress.downloaded || null,
+              speed: realProgress.speed || null,
+              timeLeft: realProgress.timeLeft || null,
+              isReal: true, // ✅ Frontend knows this is REAL!
+            });
+          }
+        },
       });
 
       if (!downloadResult.success) {
