@@ -9,9 +9,6 @@ class InstantMetadataService {
     this.inflightRequests = new Map();
   }
 
-  // =====================================================
-  // 🚀 MAIN ENTRY
-  // =====================================================
   async getInstantMetadata(url) {
     const startTime = Date.now();
 
@@ -21,7 +18,6 @@ class InstantMetadataService {
 
       console.log(`\n🔍 Metadata request for: ${detection.platformName}`);
 
-      // 1️⃣ CACHE FIRST
       const cached = await cacheService.getMetadata(url);
       if (cached) {
         return {
@@ -37,7 +33,6 @@ class InstantMetadataService {
         };
       }
 
-      // 2️⃣ IN-FLIGHT DEDUPE
       if (this.inflightRequests.has(url)) {
         console.log("⏳ Waiting for in-flight request...");
         return this.inflightRequests.get(url);
@@ -78,9 +73,6 @@ class InstantMetadataService {
     }
   }
 
-  // =====================================================
-  // 🔥 METADATA FETCHER WITH MULTI-PLATFORM COOKIES
-  // =====================================================
   async fetchMetadataFromSource(url, platform) {
     const options = [
       "--dump-json",
@@ -102,17 +94,27 @@ class InstantMetadataService {
       cookieManager.addCookieOptions(options, platform);
     }
 
+    // 🔥 FIXED: Instagram - updated headers + longer timeout
     if (platform === "instagram") {
       options.push(
         "--user-agent",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 Instagram/311.0.0.34.109",
         "--add-header",
         "Referer:https://www.instagram.com/",
         "--add-header",
+        "Origin:https://www.instagram.com",
+        "--add-header",
         "X-IG-App-ID:936619743392459",
+        "--add-header",
+        "X-ASBD-ID:129477",
+        "--add-header",
+        "X-IG-WWW-Claim:0",
+        "--add-header",
+        "Accept:*/*",
+        "--add-header",
+        "Accept-Language:en-US,en;q=0.9",
+        "--legacy-server-connect",
       );
-
-      // 🔥 CRITICAL: Add Instagram cookies for metadata
       cookieManager.addCookieOptions(options, platform);
     }
 
@@ -136,21 +138,20 @@ class InstantMetadataService {
       cookieManager.addCookieOptions(options, platform);
     }
 
+    // 🔥 FIXED: Instagram gets 30s timeout, others keep 15s
+    const timeoutMs = platform === "instagram" ? 30000 : 15000;
+
     const result = await Promise.race([
       this.ytDlp.execPromise([url, ...options]),
       new Promise((_, r) =>
-        setTimeout(() => r(new Error("Metadata timeout")), 15000),
+        setTimeout(() => r(new Error("Metadata timeout")), timeoutMs),
       ),
     ]);
 
     const raw = JSON.parse(result);
-
     return this.cleanMetadata(raw, url);
   }
 
-  // =====================================================
-  // 🧹 CLEAN METADATA
-  // =====================================================
   cleanMetadata(raw, url) {
     const thumbnail = this.extractThumbnail(raw);
 
@@ -170,9 +171,6 @@ class InstantMetadataService {
     };
   }
 
-  // =====================================================
-  // 🖼️ UNIVERSAL THUMBNAIL EXTRACTOR
-  // =====================================================
   extractThumbnail(raw) {
     if (raw.thumbnails?.length) {
       return raw.thumbnails.sort((a, b) => (b.width || 0) - (a.width || 0))[0]
@@ -187,9 +185,6 @@ class InstantMetadataService {
     );
   }
 
-  // =====================================================
-  // 📦 FORMATS
-  // =====================================================
   parseAvailableFormats(raw) {
     return {
       video: [
@@ -205,9 +200,6 @@ class InstantMetadataService {
     };
   }
 
-  // =====================================================
-  // ⏱️ HELPERS
-  // =====================================================
   parseDate(dateStr) {
     if (!dateStr || dateStr.length !== 8) return null;
     return new Date(
@@ -223,9 +215,7 @@ class InstantMetadataService {
     const m = Math.floor((s % 3600) / 60);
     const sec = Math.floor(s % 60);
     return h
-      ? `${h}:${m.toString().padStart(2, "0")}:${sec
-          .toString()
-          .padStart(2, "0")}`
+      ? `${h}:${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`
       : `${m}:${sec.toString().padStart(2, "0")}`;
   }
 
@@ -237,19 +227,21 @@ class InstantMetadataService {
     return n.toString();
   }
 
-  // =====================================================
-  // ❌ ERRORS
-  // =====================================================
   getUserFriendlyError(msg) {
-    msg = msg.toLowerCase();
+    msg = (msg || "").toLowerCase();
 
     if (msg.includes("private")) return "Private video";
     if (msg.includes("unavailable")) return "Video unavailable";
     if (msg.includes("copyright")) return "Copyright protected";
-    if (msg.includes("timeout")) return "Server timeout";
-    if (msg.includes("login")) return "Login required";
+    if (msg.includes("timeout")) return "Server timeout - please try again";
+    if (msg.includes("login") || msg.includes("rate-limit"))
+      return "This Instagram content requires login. Try a public video.";
+    if (msg.includes("400") || msg.includes("bad request"))
+      return "Instagram is temporarily blocking requests. Try again in a moment.";
+    if (msg.includes("not granting"))
+      return "Instagram access denied. Cookies may need refreshing.";
 
-    return "Failed to fetch video info";
+    return "Failed to fetch video info. Please try again.";
   }
 }
 

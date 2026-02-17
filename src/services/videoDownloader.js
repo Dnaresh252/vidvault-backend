@@ -930,12 +930,7 @@ class VideoDownloaderService {
 
       // 🔥 Add TikTok cookies if available
       cookieManager.addCookieOptions(options, platform);
-    }
-
-    // ============================================
-    // ✅ INSTAGRAM - FIXED WITH COOKIES 🔥
-    // ============================================
-    else if (platform === "instagram") {
+    } else if (platform === "instagram") {
       const heightMap = {
         highest: 720,
         high: 720,
@@ -948,12 +943,26 @@ class VideoDownloaderService {
         "-f",
         `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/best`,
         "--user-agent",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 Instagram/311.0.0.34.109",
         "--add-header",
         "Referer:https://www.instagram.com/",
+        "--add-header",
+        "Origin:https://www.instagram.com",
+        "--add-header",
+        "X-IG-App-ID:936619743392459",
+        "--add-header",
+        "X-ASBD-ID:129477",
+        "--add-header",
+        "X-IG-WWW-Claim:0",
+        "--add-header",
+        "Accept-Language:en-US,en;q=0.9",
+        "--legacy-server-connect",
       );
 
-      cookieManager.addCookieOptions(options, platform);
+      const hasCookies = cookieManager.addCookieOptions(options, platform);
+      if (!hasCookies) {
+        console.log("⚠️  [INSTAGRAM] No cookies! Download may fail.");
+      }
     }
 
     // ============================================
