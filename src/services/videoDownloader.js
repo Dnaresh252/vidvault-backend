@@ -512,10 +512,9 @@ class VideoDownloaderService {
       userAgent = null,
       includeThumbnail = false,
       prefetchedMetadata = null,
-      progressCallback = null, // ✅ NEW!
+      progressCallback = null,
     } = options;
 
-    // Same validation as regular downloadVideo
     if (this.activeDownloads.size >= this.maxConcurrentDownloads) {
       return {
         success: false,
@@ -525,7 +524,6 @@ class VideoDownloaderService {
     }
 
     const downloadId = crypto.randomBytes(8).toString("hex");
-    let downloadRecord = null;
     const downloadStartTime = Date.now();
 
     try {
@@ -540,10 +538,9 @@ class VideoDownloaderService {
 
       this.activeDownloads.set(downloadId, { startTime: Date.now(), url });
 
-      // Check cache
+      // Check R2 cache first
       const cachedResult = await cacheService.getR2Url(url, quality, format);
       if (cachedResult && cachedResult.cached) {
-        // Instant download from cache
         let metadata;
         try {
           const metaResult =
@@ -605,21 +602,13 @@ class VideoDownloaderService {
         };
       }
 
-      // ✅ PERFORM DOWNLOAD with progress callback
+      // Perform download with progress callback
       const downloadResult = await this.performStreamingDownload(
-        {
-          url,
-          quality,
-          format,
-          audioOnly,
-          detection,
-          metadata,
-          downloadId,
-        },
+        { url, quality, format, audioOnly, detection, metadata, downloadId },
         progressCallback,
-      ); // ✅ PASS CALLBACK HERE!
+      );
 
-      // Cache result
+      // Cache result for next user
       await cacheService.setR2Url(
         url,
         quality,
@@ -628,6 +617,30 @@ class VideoDownloaderService {
         downloadResult.fileSize,
         10 * 60,
       );
+
+      // ✅ THE ONLY FIX: Save to MongoDB ONLY on success (you only count completed!)
+      try {
+        const record = new (require("../models/Download"))({
+          originalUrl: url,
+          platform: detection.platform,
+          videoId: detection.videoId,
+          requestedQuality: quality,
+          requestedFormat: format,
+          status: "completed",
+          processingStartTime: new Date(downloadStartTime),
+          processingEndTime: new Date(),
+          ipAddress: userIP
+            ? require("crypto")
+                .createHash("sha256")
+                .update(userIP)
+                .digest("hex")
+            : null,
+          userAgent: userAgent,
+        });
+        await record.save();
+      } catch (dbError) {
+        console.error("⚠️ DB save failed (non-critical):", dbError.message);
+      }
 
       const responseData = {
         id: downloadId,
@@ -674,7 +687,6 @@ class VideoDownloaderService {
       this.activeDownloads.delete(downloadId);
     }
   }
-  // 🔥 FIXED: Replace your streamDirectlyToR2 function (around line 684-786) with this:
 
   async streamDirectlyToR2(options, progressCallback = null) {
     const {
