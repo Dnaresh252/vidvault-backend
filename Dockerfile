@@ -15,10 +15,11 @@ RUN apt-get update && apt-get install -y \
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# ✅ Install yt-dlp + curl-cffi (REQUIRED for TikTok impersonation)
 RUN pip install --no-cache-dir -U --pre "yt-dlp[default]"
 RUN pip install --no-cache-dir curl-cffi
+RUN pip install --no-cache-dir gallery-dl
 RUN yt-dlp --version
+RUN gallery-dl --version
 
 WORKDIR /app
 
@@ -27,8 +28,8 @@ RUN npm ci --only=production
 
 COPY . .
 
-RUN mkdir -p /tmp/downloads /tmp/temp && \
-    chmod 777 /tmp/downloads /tmp/temp
+RUN mkdir -p /tmp/downloads /tmp/temp /tmp/ig-images && \
+    chmod 777 /tmp/downloads /tmp/temp /tmp/ig-images
 
 USER node
 

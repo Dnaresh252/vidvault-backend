@@ -984,8 +984,38 @@ class VideoDownloaderService {
 
       // 🔥 Add Twitter cookies if available
       cookieManager.addCookieOptions(options, platform);
-    }
+    } else if (platform === "threads") {
+      const heightMap = {
+        highest: 1080,
+        high: 720,
+        medium: 480,
+        low: 360,
+      };
+      const maxHeight = heightMap[quality] || 720;
 
+      options.push(
+        "-f",
+        `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/best`,
+        "--user-agent",
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 Instagram/311.0.0.34.109",
+        "--add-header",
+        "Referer:https://www.threads.net/",
+        "--add-header",
+        "Origin:https://www.threads.net",
+        "--add-header",
+        "X-IG-App-ID:936619743392459",
+        "--add-header",
+        "Accept-Language:en-US,en;q=0.9",
+      );
+
+      // Threads uses Instagram cookies
+      const hasCookies = cookieManager.addCookieOptions(options, "instagram");
+      if (!hasCookies) {
+        console.log(
+          "⚠️  [THREADS] No cookies — download may fail for some posts",
+        );
+      }
+    }
     // ============================================
     // ✅ FACEBOOK - Pre-merged + COOKIES
     // ============================================
@@ -1082,7 +1112,12 @@ class VideoDownloaderService {
         medium: 300000, // ~2.4 Mbps
         low: 150000, // ~1.2 Mbps
       },
-
+      threads: {
+        highest: 320000,
+        high: 220000,
+        medium: 160000,
+        low: 90000,
+      },
       instagram: {
         highest: 320000,
         high: 220000,

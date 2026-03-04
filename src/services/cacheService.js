@@ -277,6 +277,33 @@ class CacheService {
   // ===================================
   // UTILITY METHODS
   // ===================================
+  // ===================================
+  // GENERIC GET/SET (used by instagram, transcript etc)
+  // ===================================
+
+  async get(key) {
+    if (!this.enabled) return null;
+    try {
+      const cached = await this.redis.get(key);
+      if (cached) console.log(`🎯 Cache HIT: ${key}`);
+      return cached || null;
+    } catch (error) {
+      console.error("Redis get error:", error.message);
+      return null;
+    }
+  }
+
+  async set(key, value, ttl = 600) {
+    if (!this.enabled) return false;
+    try {
+      await this.redis.setex(key, ttl, value);
+      console.log(`💾 Cached: ${key} (${ttl}s)`);
+      return true;
+    } catch (error) {
+      console.error("Redis set error:", error.message);
+      return false;
+    }
+  }
 
   /**
    * Delete cache for a specific URL (useful for updates)

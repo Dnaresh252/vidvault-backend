@@ -147,7 +147,9 @@ app.use("/api/v1", apiLimiter);
 // API routes
 app.use("/api/v1/download", require("./src/routes/download"));
 app.use("/api/v1/instant", require("./src/routes/Instantroutes"));
-
+app.use("/api/v1/transcript", require("./src/routes/transcript"));
+app.use("/api/v1/instagram", require("./src/routes/instagram"));
+app.use("/api/v1/threads", require("./src/routes/threads"));
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error("Error:", err);

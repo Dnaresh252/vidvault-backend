@@ -24,6 +24,7 @@
     "@bull-board/express": "^6.13.0",
     "@distube/ytdl-core": "^4.16.12",
     "@upstash/redis": "^1.36.2",
+    "archiver": "^7.0.1",
     "bull": "^4.16.5",
     "cheerio": "^1.0.0-rc.12",
     "compression": "^1.7.4",

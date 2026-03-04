@@ -15,6 +15,16 @@ class PlatformDetector {
         formats: ["mp4", "mp3", "webm"],
         maxQuality: "8K",
       },
+      threads: {
+        patterns: [
+          /(?:https?:\/\/)?(?:www\.)?threads\.net\/@([a-zA-Z0-9_.-]+)\/post\/([a-zA-Z0-9_-]+)/,
+          /(?:https?:\/\/)?(?:www\.)?threads\.com\/@([a-zA-Z0-9_.-]+)\/post\/([a-zA-Z0-9_-]+)/,
+        ],
+        name: "Threads",
+        supported: true,
+        formats: ["mp4"],
+        maxQuality: "1080p",
+      },
       instagram: {
         patterns: [
           /(?:https?:\/\/)?(?:www\.)?instagram\.com\/p\/([a-zA-Z0-9_-]+)/,
@@ -124,7 +134,7 @@ class PlatformDetector {
 
       // Check each platform
       for (const [platformKey, platformData] of Object.entries(
-        this.platforms
+        this.platforms,
       )) {
         for (const pattern of platformData.patterns) {
           const match = cleanUrl.match(pattern);
@@ -234,6 +244,8 @@ class PlatformDetector {
 
       case "reddit":
         return match[1] || match[2]; // Post or video ID
+      case "threads":
+        return match[2] || match[1]; // post ID
 
       case "vimeo":
         return match[1]; // Video ID
