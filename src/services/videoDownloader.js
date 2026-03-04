@@ -882,6 +882,7 @@ class VideoDownloaderService {
 
   // 🔥 UPDATED: Line ~16 - Add this line to fix Instagram
   // Replace this in your videoDownloader.js
+
   buildDownloadOptions({ quality, format, audioOnly, platform }) {
     const options = [];
 
@@ -913,6 +914,7 @@ class VideoDownloaderService {
       };
       const maxHeight = heightMap[quality] || 720;
 
+      // ✅ NEW
       options.push(
         "-f",
         `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/b`,
@@ -926,13 +928,9 @@ class VideoDownloaderService {
         "Accept-Language:en-US,en;q=0.9",
       );
 
+      // 🔥 Add TikTok cookies if available
       cookieManager.addCookieOptions(options, platform);
-    }
-
-    // ============================================
-    // ✅ INSTAGRAM
-    // ============================================
-    else if (platform === "instagram") {
+    } else if (platform === "instagram") {
       const heightMap = {
         highest: 720,
         high: 720,
@@ -968,7 +966,7 @@ class VideoDownloaderService {
     }
 
     // ============================================
-    // ✅ TWITTER/X
+    // ✅ TWITTER/X - Pre-merged + COOKIES
     // ============================================
     else if (platform === "twitter") {
       const heightMap = {
@@ -984,13 +982,9 @@ class VideoDownloaderService {
         `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
       );
 
+      // 🔥 Add Twitter cookies if available
       cookieManager.addCookieOptions(options, platform);
-    }
-
-    // ============================================
-    // ✅ THREADS
-    // ============================================
-    else if (platform === "threads") {
+    } else if (platform === "threads") {
       const heightMap = {
         highest: 1080,
         high: 720,
@@ -1014,6 +1008,7 @@ class VideoDownloaderService {
         "Accept-Language:en-US,en;q=0.9",
       );
 
+      // Threads uses Instagram cookies
       const hasCookies = cookieManager.addCookieOptions(options, "instagram");
       if (!hasCookies) {
         console.log(
@@ -1021,9 +1016,8 @@ class VideoDownloaderService {
         );
       }
     }
-
     // ============================================
-    // ✅ FACEBOOK
+    // ✅ FACEBOOK - Pre-merged + COOKIES
     // ============================================
     else if (platform === "facebook") {
       const heightMap = {
@@ -1039,11 +1033,12 @@ class VideoDownloaderService {
         `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
       );
 
+      // 🔥 Add Facebook cookies if available
       cookieManager.addCookieOptions(options, platform);
     }
 
     // ============================================
-    // ✅ REDDIT
+    // ✅ REDDIT - Simple best
     // ============================================
     else if (platform === "reddit") {
       options.push("-f", "best[ext=mp4]/best");
@@ -1051,7 +1046,6 @@ class VideoDownloaderService {
 
     // ============================================
     // ✅ YOUTUBE + VIMEO + ALL OTHERS
-    // 🔥 WITH CLOUDFLARE WARP PROXY!
     // ============================================
     else {
       const heightMap = {
@@ -1100,248 +1094,13 @@ class VideoDownloaderService {
       "node",
     );
 
-    // ============================================
-    // 🔥 YOUTUBE - CLOUDFLARE WARP PROXY
-    // Bypasses geo-restrictions!
-    // ============================================
+    // ✅ YouTube cookies (already working)
     if (platform === "youtube") {
       options.push("--geo-bypass-country", "US");
-
-      // 🔥 USE CLOUDFLARE WARP IF ENABLED
-      const warpEnabled = process.env.WARP_ENABLED === "true";
-      const warpProxy =
-        process.env.WARP_PROXY_URL || "socks5://127.0.0.1:40000";
-
-      if (warpEnabled) {
-        options.push("--proxy", warpProxy);
-        console.log(`🌐 [YOUTUBE] Using Cloudflare WARP: ${warpProxy}`);
-      } else {
-        console.log(`ℹ️  [YOUTUBE] WARP disabled, may hit geo-restrictions`);
-      }
-
       cookieManager.addCookieOptions(options, platform);
     }
-
     return options;
   }
-  // buildDownloadOptions({ quality, format, audioOnly, platform }) {
-  //   const options = [];
-
-  //   // ============================================
-  //   // ✅ AUDIO ONLY
-  //   // ============================================
-  //   if (audioOnly || format === "mp3") {
-  //     options.push("-f", "bestaudio/best");
-  //     if (format === "mp3") {
-  //       options.push(
-  //         "--extract-audio",
-  //         "--audio-format",
-  //         "mp3",
-  //         "--audio-quality",
-  //         "0",
-  //       );
-  //     }
-  //   }
-
-  //   // ============================================
-  //   // ✅ TIKTOK - Pre-merged streams, special API
-  //   // ============================================
-  //   else if (platform === "tiktok") {
-  //     const heightMap = {
-  //       highest: 1080,
-  //       high: 720,
-  //       medium: 540,
-  //       low: 360,
-  //     };
-  //     const maxHeight = heightMap[quality] || 720;
-
-  //     // ✅ NEW
-  //     options.push(
-  //       "-f",
-  //       `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/b`,
-  //       "--extractor-args",
-  //       "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
-  //       "--impersonate",
-  //       "chrome-110",
-  //       "--add-header",
-  //       "Referer:https://www.tiktok.com/",
-  //       "--add-header",
-  //       "Accept-Language:en-US,en;q=0.9",
-  //     );
-
-  //     // 🔥 Add TikTok cookies if available
-  //     cookieManager.addCookieOptions(options, platform);
-  //   } else if (platform === "instagram") {
-  //     const heightMap = {
-  //       highest: 720,
-  //       high: 720,
-  //       medium: 480,
-  //       low: 360,
-  //     };
-  //     const maxHeight = heightMap[quality] || 480;
-
-  //     options.push(
-  //       "-f",
-  //       `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/best`,
-  //       "--user-agent",
-  //       "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 Instagram/311.0.0.34.109",
-  //       "--add-header",
-  //       "Referer:https://www.instagram.com/",
-  //       "--add-header",
-  //       "Origin:https://www.instagram.com",
-  //       "--add-header",
-  //       "X-IG-App-ID:936619743392459",
-  //       "--add-header",
-  //       "X-ASBD-ID:129477",
-  //       "--add-header",
-  //       "X-IG-WWW-Claim:0",
-  //       "--add-header",
-  //       "Accept-Language:en-US,en;q=0.9",
-  //       "--legacy-server-connect",
-  //     );
-
-  //     const hasCookies = cookieManager.addCookieOptions(options, platform);
-  //     if (!hasCookies) {
-  //       console.log("⚠️  [INSTAGRAM] No cookies! Download may fail.");
-  //     }
-  //   }
-
-  //   // ============================================
-  //   // ✅ TWITTER/X - Pre-merged + COOKIES
-  //   // ============================================
-  //   else if (platform === "twitter") {
-  //     const heightMap = {
-  //       highest: 1080,
-  //       high: 720,
-  //       medium: 480,
-  //       low: 360,
-  //     };
-  //     const maxHeight = heightMap[quality] || 720;
-
-  //     options.push(
-  //       "-f",
-  //       `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
-  //     );
-
-  //     // 🔥 Add Twitter cookies if available
-  //     cookieManager.addCookieOptions(options, platform);
-  //   } else if (platform === "threads") {
-  //     const heightMap = {
-  //       highest: 1080,
-  //       high: 720,
-  //       medium: 480,
-  //       low: 360,
-  //     };
-  //     const maxHeight = heightMap[quality] || 720;
-
-  //     options.push(
-  //       "-f",
-  //       `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/best`,
-  //       "--user-agent",
-  //       "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 Instagram/311.0.0.34.109",
-  //       "--add-header",
-  //       "Referer:https://www.threads.net/",
-  //       "--add-header",
-  //       "Origin:https://www.threads.net",
-  //       "--add-header",
-  //       "X-IG-App-ID:936619743392459",
-  //       "--add-header",
-  //       "Accept-Language:en-US,en;q=0.9",
-  //     );
-
-  //     // Threads uses Instagram cookies
-  //     const hasCookies = cookieManager.addCookieOptions(options, "instagram");
-  //     if (!hasCookies) {
-  //       console.log(
-  //         "⚠️  [THREADS] No cookies — download may fail for some posts",
-  //       );
-  //     }
-  //   }
-  //   // ============================================
-  //   // ✅ FACEBOOK - Pre-merged + COOKIES
-  //   // ============================================
-  //   else if (platform === "facebook") {
-  //     const heightMap = {
-  //       highest: 1080,
-  //       high: 720,
-  //       medium: 480,
-  //       low: 360,
-  //     };
-  //     const maxHeight = heightMap[quality] || 720;
-
-  //     options.push(
-  //       "-f",
-  //       `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
-  //     );
-
-  //     // 🔥 Add Facebook cookies if available
-  //     cookieManager.addCookieOptions(options, platform);
-  //   }
-
-  //   // ============================================
-  //   // ✅ REDDIT - Simple best
-  //   // ============================================
-  //   else if (platform === "reddit") {
-  //     options.push("-f", "best[ext=mp4]/best");
-  //   }
-
-  //   // ============================================
-  //   // ✅ YOUTUBE + VIMEO + ALL OTHERS
-  //   // ============================================
-  //   else {
-  //     const heightMap = {
-  //       highest: 1080,
-  //       high: 720,
-  //       medium: 720,
-  //       low: 480,
-  //     };
-  //     const maxHeight = heightMap[quality] || 720;
-
-  //     if (format === "mp4") {
-  //       options.push(
-  //         "-f",
-  //         `bv*[ext=mp4][height<=${maxHeight}]+ba[ext=m4a]/b[ext=mp4][height<=${maxHeight}]/best[height<=${maxHeight}]/best`,
-  //         "--merge-output-format",
-  //         "mp4",
-  //       );
-  //     } else if (format === "webm") {
-  //       options.push(
-  //         "-f",
-  //         `bv*[height<=${maxHeight}]+ba/best[height<=${maxHeight}]/best`,
-  //         "--merge-output-format",
-  //         "webm",
-  //       );
-  //     } else {
-  //       options.push("-f", `best[height<=${maxHeight}]/best`);
-  //     }
-  //   }
-
-  //   // ============================================
-  //   // ✅ UNIVERSAL FLAGS - ALL PLATFORMS
-  //   // ============================================
-  //   options.push(
-  //     "--no-playlist",
-  //     "--socket-timeout",
-  //     "30",
-  //     "--retries",
-  //     "10",
-  //     "--fragment-retries",
-  //     "10",
-  //     "--retry-sleep",
-  //     "3",
-  //     "--file-access-retries",
-  //     "5",
-  //     "--js-runtimes",
-  //     "node",
-  //   );
-
-  //   // ✅ YouTube cookies (already working)
-  //   if (platform === "youtube") {
-  //     options.push("--geo-bypass-country", "US");
-  //     cookieManager.addCookieOptions(options, platform);
-  //   }
-  //   return options;
-  // }
   estimateFileSize(durationSeconds, quality, platform = "generic") {
     if (!durationSeconds || durationSeconds <= 0) return 0;
 
@@ -1399,21 +1158,8 @@ class VideoDownloaderService {
 
     return Math.ceil(estimated);
   }
+
   getUserFriendlyError(errorMessage) {
-    const lowerError = (errorMessage || "").toLowerCase();
-
-    // 🔥 GEO-BLOCKING (Most common YouTube error)
-    if (
-      lowerError.includes("not made this video available in your country") ||
-      lowerError.includes("not available in your country") ||
-      lowerError.includes("uploader has not made this video available") ||
-      lowerError.includes("video is not available") ||
-      lowerError.includes("geo")
-    ) {
-      return "⚠️ This video is geo-restricted. Our system is trying to bypass it, but some videos may still be blocked. Try a different video or use TikTok/Instagram which work perfectly!";
-    }
-
-    // Standard errors
     const errorMap = {
       private: "This video is private and cannot be downloaded.",
       unavailable: "This video is no longer available.",
@@ -1421,44 +1167,20 @@ class VideoDownloaderService {
       "age-restricted":
         "This video is age-restricted and cannot be downloaded.",
       copyright: "This video is protected by copyright.",
-      timeout: "Download timed out. Please try a lower quality or try again.",
+      "geo-restricted": "This video is not available in your region.",
+      timeout: "Download timed out. Please try a lower quality.",
       "members-only": "This video is only available to channel members.",
-      "login required": "This content requires login. Try a different video.",
-      "rate-limit": "Rate limit reached. Please wait a moment and try again.",
     };
 
+    const lowerError = errorMessage.toLowerCase();
     for (const [key, message] of Object.entries(errorMap)) {
-      if (lowerError.includes(key)) {
+      if (lowerError.includes(key.toLowerCase())) {
         return message;
       }
     }
 
-    // Generic fallback with helpful suggestion
-    return "Download failed. This video may be restricted. Try TikTok or Instagram - they work great! If the issue persists, try a lower quality setting.";
+    return "Download failed. The video may be restricted or unavailable.";
   }
-
-  // getUserFriendlyError(errorMessage) {
-  //   const errorMap = {
-  //     private: "This video is private and cannot be downloaded.",
-  //     unavailable: "This video is no longer available.",
-  //     removed: "This video has been removed.",
-  //     "age-restricted":
-  //       "This video is age-restricted and cannot be downloaded.",
-  //     copyright: "This video is protected by copyright.",
-  //     "geo-restricted": "This video is not available in your region.",
-  //     timeout: "Download timed out. Please try a lower quality.",
-  //     "members-only": "This video is only available to channel members.",
-  //   };
-
-  //   const lowerError = errorMessage.toLowerCase();
-  //   for (const [key, message] of Object.entries(errorMap)) {
-  //     if (lowerError.includes(key.toLowerCase())) {
-  //       return message;
-  //     }
-  //   }
-
-  //   return "Download failed. The video may be restricted or unavailable.";
-  // }
 
   async createDownloadRecord(options) {
     try {

@@ -113,39 +113,10 @@ app.get("/sitemap.xml", (req, res) => {
 // ============================================================
 
 // Health check endpoint with dependency checks
-// app.get("/health", async (req, res) => {
-//   const mongoose = require("mongoose");
-//   const videoDownloader = require("./src/services/videoDownloader");
-//   const cacheService = require("./src/services/cacheService");
-
-//   const mongoStatus =
-//     mongoose.connection.readyState === 1 ? "connected" : "disconnected";
-//   const r2Status = videoDownloader.r2Working ? "connected" : "disconnected";
-//   const cacheStatus = (await cacheService.ping())
-//     ? "connected"
-//     : "disconnected";
-
-//   const isHealthy = mongoStatus === "connected";
-
-//   res.status(isHealthy ? 200 : 503).json({
-//     status: isHealthy ? "healthy" : "degraded",
-//     message: "VidVault API",
-//     timestamp: new Date().toISOString(),
-//     environment: process.env.NODE_ENV,
-//     version: "1.0.0",
-//     dependencies: {
-//       mongodb: mongoStatus,
-//       r2Storage: r2Status,
-//       redisCache: cacheStatus,
-//     },
-//   });
-// });
-// Health check endpoint with dependency checks
 app.get("/health", async (req, res) => {
   const mongoose = require("mongoose");
   const videoDownloader = require("./src/services/videoDownloader");
   const cacheService = require("./src/services/cacheService");
-  const { exec } = require("child_process");
 
   const mongoStatus =
     mongoose.connection.readyState === 1 ? "connected" : "disconnected";
@@ -153,23 +124,6 @@ app.get("/health", async (req, res) => {
   const cacheStatus = (await cacheService.ping())
     ? "connected"
     : "disconnected";
-
-  // 🔥 Check WARP status
-  let warpStatus = "disabled";
-  if (process.env.WARP_ENABLED === "true") {
-    try {
-      const warpCheck = await new Promise((resolve) => {
-        exec("warp-cli --accept-tos status 2>/dev/null", (error, stdout) => {
-          resolve(stdout.includes("Connected") ? "connected" : "disconnected");
-        });
-        // Timeout after 2 seconds
-        setTimeout(() => resolve("timeout"), 2000);
-      });
-      warpStatus = warpCheck;
-    } catch {
-      warpStatus = "error";
-    }
-  }
 
   const isHealthy = mongoStatus === "connected";
 
@@ -183,45 +137,10 @@ app.get("/health", async (req, res) => {
       mongodb: mongoStatus,
       r2Storage: r2Status,
       redisCache: cacheStatus,
-      cloudflareWarp: warpStatus, // 🔥 NEW!
     },
   });
 });
-// ============================================================
-// 🔥 CLOUDFLARE WARP STATUS ENDPOINT
-// Check if WARP is connected and working
-// ============================================================
-app.get("/api/v1/warp/status", async (req, res) => {
-  const { exec } = require("child_process");
 
-  // Check if WARP is enabled
-  const warpEnabled = process.env.WARP_ENABLED === "true";
-
-  if (!warpEnabled) {
-    return res.json({
-      status: "disabled",
-      message: "Cloudflare WARP is disabled",
-      proxy: null,
-      geoblocking: "No bypass - may hit geo-restrictions",
-    });
-  }
-
-  // Check WARP connection status
-  exec("warp-cli --accept-tos status 2>/dev/null", (error, stdout, stderr) => {
-    const isConnected = stdout.includes("Connected");
-    const proxyUrl = process.env.WARP_PROXY_URL || "socks5://127.0.0.1:40000";
-
-    res.json({
-      status: isConnected ? "connected" : "disconnected",
-      message: isConnected
-        ? "Cloudflare WARP is active - Geo-blocking bypass enabled!"
-        : "WARP is not connected - Geo-restrictions may apply",
-      proxy: proxyUrl,
-      geoblocking: isConnected ? "Bypassed ✅" : "Active ⚠️",
-      details: stdout.trim() || "Status unavailable",
-    });
-  });
-});
 // Apply rate limiting to all API routes
 app.use("/api/v1", apiLimiter);
 
