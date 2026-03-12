@@ -605,22 +605,24 @@ exports.healthCheck = async (req, res) => {
 
 exports.getServerStats = async (req, res) => {
   try {
-    // ✅ CRITICAL: Add cache headers (saves 95% of requests)
-    res.set("Cache-Control", "public, max-age=300"); // 5 minutes browser cache
+    const startOfTodayIST = getISTMidnightUTC();
+    const nextMidnightIST = getNextISTMidnightUTC();
 
-    // ✅ CRITICAL: Use UTC time for consistent daily counts globally
-    const startOfToday = new Date();
-    startOfToday.setUTCHours(0, 0, 0, 0); // Midnight UTC (not local time)
+    // Cache expires exactly at next IST midnight — never stale
+    const now = new Date();
+    const secondsUntilISTMidnight = Math.floor((nextMidnightIST - now) / 1000);
+    const cacheTTL = Math.min(300, Math.max(1, secondsUntilISTMidnight));
+    res.set("Cache-Control", `public, max-age=${cacheTTL}`);
 
     const [totalDownloads, downloadsToday] = await Promise.all([
       Download.countDocuments({ status: "completed" }),
       Download.countDocuments({
         status: "completed",
-        createdAt: { $gte: startOfToday },
+        createdAt: { $gte: startOfTodayIST },
       }),
     ]);
 
-    // ✅ Get server stats safely (with fallback)
+    // Get server stats safely
     let serverStats = {
       activeDownloads: 0,
       maxConcurrent: 5,
@@ -646,7 +648,7 @@ exports.getServerStats = async (req, res) => {
       status: "success",
       data: {
         totalDownloads: totalDownloads || 0,
-        platformsSupported: 25, // ✅ HARDCODED - no getSupportedPlatforms() call
+        platformsSupported: 25,
         downloadsToday: downloadsToday || 0,
         activeDownloads: serverStats.activeDownloads,
         maxConcurrent: serverStats.maxConcurrent,
@@ -656,16 +658,13 @@ exports.getServerStats = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Stats error:", error);
-
-    // ✅ Still cache error responses (prevents hammering on errors)
-    res.set("Cache-Control", "public, max-age=60"); // 1 min cache for errors
-
+    res.set("Cache-Control", "public, max-age=60");
     res.status(500).json({
       status: "error",
       message: "Error fetching stats",
       data: {
         totalDownloads: 0,
-        platformsSupported: 25, // ✅ FIXED: Should be 25, not 15
+        platformsSupported: 25,
         downloadsToday: 0,
       },
     });
