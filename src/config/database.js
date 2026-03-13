@@ -15,6 +15,8 @@ const connectDB = async () => {
       maxPoolSize: 5, // ✅ IMPORTANT for M0 free tier
       serverSelectionTimeoutMS: 10000,
       socketTimeoutMS: 45000,
+      compressors: "snappy,zlib", // ✅ NEW: Compress network traffic!
+      zlibCompressionLevel: 6, // ✅ NEW: Balance speed vs compression
     });
 
     isConnected = true;
@@ -22,6 +24,7 @@ const connectDB = async () => {
     console.log("✅ MongoDB Atlas Connected Successfully");
     console.log(`📊 Database: ${mongoose.connection.name}`);
     console.log(`🔗 Host: ${mongoose.connection.host}`);
+    console.log(`🗜️ Compression: snappy,zlib enabled`); // ✅ NEW: Confirm compression
   } catch (error) {
     console.error("❌ MongoDB connection failed:", error.message);
 

@@ -47,7 +47,7 @@ class VideoDownloaderService {
     }
 
     this.activeDownloads = new Map();
-    this.maxConcurrentDownloads = 4;
+    this.maxConcurrentDownloads = 2;
 
     this.ensureDirectories();
     this.testDNSResolution();
@@ -310,15 +310,6 @@ class VideoDownloaderService {
       // 🔥 STEP 2: Cache miss - proceed with download
       console.log(`📥 [${downloadId}] Cache miss - downloading fresh...`);
 
-      downloadRecord = await this.createDownloadRecord({
-        url,
-        detection,
-        quality,
-        format,
-        userIP,
-        userAgent,
-      });
-
       let metadata;
       try {
         console.log("📋 Extracting metadata...");
@@ -357,14 +348,6 @@ class VideoDownloaderService {
         };
       }
 
-      if (downloadRecord && metadata.title !== "Video") {
-        await this.updateDownloadRecord(downloadRecord, {
-          title: metadata.title,
-          thumbnail: metadata.thumbnail,
-          duration: metadata.duration,
-        }).catch(() => {});
-      }
-
       const downloadResult = await this.performStreamingDownload({
         url,
         quality,
@@ -393,19 +376,8 @@ class VideoDownloaderService {
         `✓ [${downloadId}] Download completed in ${downloadDuration}s`,
       );
 
-      if (downloadRecord) {
-        await this.updateDownloadRecord(downloadRecord, {
-          status: "completed",
-          actualQuality: downloadResult.quality,
-          actualFormat: downloadResult.format,
-          fileSize: downloadResult.fileSize,
-          downloadUrl: downloadResult.downloadUrl,
-          processingEndTime: new Date(),
-        }).catch(() => {});
-      }
-
       const responseData = {
-        id: downloadRecord?._id,
+        id: downloadId,
         title: metadata.title,
         thumbnail: metadata.thumbnail, // 🔥 Direct URL for preview!
         duration: metadata.duration,
@@ -448,17 +420,6 @@ class VideoDownloaderService {
       // 🔥 Special handling for file too large
       if (error.code === "FILE_TOO_LARGE") {
         userMessage = `Video too large! This video is approximately ${this.formatFileSize(error.estimatedSize)}, but our limit is ${this.formatFileSize(error.maxSize)}. Please try 720p or lower quality.`;
-      }
-
-      if (downloadRecord) {
-        await this.updateDownloadRecord(downloadRecord, {
-          status: "failed",
-          error: {
-            message: userMessage,
-            code: error.code || "DOWNLOAD_ERROR",
-          },
-          processingEndTime: new Date(),
-        }).catch(() => {});
       }
 
       return {
@@ -620,24 +581,29 @@ class VideoDownloaderService {
 
       // ✅ THE ONLY FIX: Save to MongoDB ONLY on success (you only count completed!)
       try {
-        const record = new (require("../models/Download"))({
+        const successRecord = new Download({
           originalUrl: url,
           platform: detection.platform,
           videoId: detection.videoId,
           requestedQuality: quality,
           requestedFormat: format,
-          status: "completed",
+          status: "completed", // ✅ Only completed!
+          title: metadata.title,
+          thumbnail: metadata.thumbnail,
+          duration: metadata.duration,
+          actualQuality: downloadResult.quality,
+          actualFormat: downloadResult.format,
+          fileSize: downloadResult.fileSize,
+          downloadUrl: downloadResult.downloadUrl,
           processingStartTime: new Date(downloadStartTime),
           processingEndTime: new Date(),
           ipAddress: userIP
-            ? require("crypto")
-                .createHash("sha256")
-                .update(userIP)
-                .digest("hex")
+            ? crypto.createHash("sha256").update(userIP).digest("hex")
             : null,
           userAgent: userAgent,
         });
-        await record.save();
+        await successRecord.save();
+        console.log(`✅ [${downloadId}] Saved to database`);
       } catch (dbError) {
         console.error("⚠️ DB save failed (non-critical):", dbError.message);
       }
