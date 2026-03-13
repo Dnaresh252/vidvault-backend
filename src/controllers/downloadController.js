@@ -8,6 +8,30 @@ const Download = require("../models/Download");
 // ----------------------
 // 🔥 FIXED: Download with Real-time Progress (SSE)
 // ----------------------
+function getISTMidnightUTC() {
+  const IST_OFFSET_MINUTES = 330; // IST = UTC+5:30
+  const now = new Date();
+  const nowIST = new Date(now.getTime() + IST_OFFSET_MINUTES * 60 * 1000);
+  const midnightIST = new Date(nowIST);
+  midnightIST.setUTCHours(0, 0, 0, 0);
+  return new Date(midnightIST.getTime() - IST_OFFSET_MINUTES * 60 * 1000);
+}
+
+function getNextISTMidnightUTC() {
+  return new Date(getISTMidnightUTC().getTime() + 24 * 60 * 60 * 1000);
+}
+function getISTMidnightUTC() {
+  const IST_OFFSET_MINUTES = 330; // IST = UTC+5:30
+  const now = new Date();
+  const nowIST = new Date(now.getTime() + IST_OFFSET_MINUTES * 60 * 1000);
+  const midnightIST = new Date(nowIST);
+  midnightIST.setUTCHours(0, 0, 0, 0);
+  return new Date(midnightIST.getTime() - IST_OFFSET_MINUTES * 60 * 1000);
+}
+
+function getNextISTMidnightUTC() {
+  return new Date(getISTMidnightUTC().getTime() + 24 * 60 * 60 * 1000);
+}
 exports.downloadVideoWithProgress = async (req, res) => {
   try {
     // SSE works with GET - accept params from both query and body
@@ -608,7 +632,7 @@ exports.getServerStats = async (req, res) => {
     const startOfTodayIST = getISTMidnightUTC();
     const nextMidnightIST = getNextISTMidnightUTC();
 
-    // Cache expires exactly at next IST midnight — never stale
+    // Smart cache — expires exactly at IST midnight, never stale
     const now = new Date();
     const secondsUntilISTMidnight = Math.floor((nextMidnightIST - now) / 1000);
     const cacheTTL = Math.min(300, Math.max(1, secondsUntilISTMidnight));
@@ -622,7 +646,6 @@ exports.getServerStats = async (req, res) => {
       }),
     ]);
 
-    // Get server stats safely
     let serverStats = {
       activeDownloads: 0,
       maxConcurrent: 5,
