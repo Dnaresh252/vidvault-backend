@@ -137,18 +137,9 @@ class InstantMetadataService {
     if (platform === "facebook") {
       cookieManager.addCookieOptions(options, platform);
     }
-    // 🔥 ENTERPRISE: Platform-specific timeouts
-    const timeoutMap = {
-      youtube: 40000, // 40s for YouTube (can be slow)
-      instagram: 30000, // 30s for Instagram
-      tiktok: 20000, // 20s for TikTok
-      facebook: 25000, // 25s for Facebook
-      twitter: 20000, // 20s for Twitter
-    };
-    const timeoutMs = timeoutMap[platform] || 20000; // Default 20s
-    console.log(`⏱️ Timeout: ${timeoutMs / 1000}s for ${platform}`);
+
     // 🔥 FIXED: Instagram gets 30s timeout, others keep 15s
-    //const timeoutMs = platform === "instagram" ? 30000 : 15000;
+    const timeoutMs = platform === "instagram" ? 30000 : 15000;
 
     const result = await Promise.race([
       this.ytDlp.execPromise([url, ...options]),

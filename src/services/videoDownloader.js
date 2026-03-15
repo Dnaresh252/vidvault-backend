@@ -47,7 +47,7 @@ class VideoDownloaderService {
     }
 
     this.activeDownloads = new Map();
-    this.maxConcurrentDownloads = 5;
+    this.maxConcurrentDownloads = 2;
 
     this.ensureDirectories();
     this.testDNSResolution();
@@ -653,6 +653,7 @@ class VideoDownloaderService {
       this.activeDownloads.delete(downloadId);
     }
   }
+
   async streamDirectlyToR2(options, progressCallback = null) {
     const {
       url,
@@ -664,467 +665,191 @@ class VideoDownloaderService {
       downloadId,
       platform,
     } = options;
+
     const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
 
-    // 🔥 ENTERPRISE RETRY LOGIC
-    const MAX_ATTEMPTS = 3;
-    let lastError = null;
+    try {
+      const ytDlpArgs = this.buildDownloadOptions({
+        quality,
+        format,
+        audioOnly,
+        platform,
+      });
 
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      try {
-        console.log(`\n🔄 [${downloadId}] Attempt ${attempt}/${MAX_ATTEMPTS}`);
+      ytDlpArgs.push("-o", tempFile);
 
-        // Build options with attempt-specific strategy
-        const ytDlpArgs = this.buildDownloadOptions({
-          quality,
-          format,
-          audioOnly,
-          platform,
-          attempt, // 🔥 Pass attempt number!
-        });
+      console.log(`⬇️ [${downloadId}] Downloading and merging audio+video...`);
 
-        ytDlpArgs.push("-o", tempFile);
+      const { spawn } = require("child_process");
 
-        console.log(
-          `⬇️ [${downloadId}] Downloading with strategy ${attempt}...`,
-        );
+      // 🔥 Store last known values
+      let lastDownloadedSize = null;
+      let lastSpeed = null;
+      let lastProgress = 0;
 
-        const { spawn } = require("child_process");
-        let lastDownloadedSize = null;
-        let lastSpeed = null;
-        let lastProgress = 0;
+      await new Promise((resolve, reject) => {
+        const ytDlpProcess = spawn("yt-dlp", [url, ...ytDlpArgs]);
 
-        await new Promise((resolve, reject) => {
-          const ytDlpProcess = spawn("yt-dlp", [url, ...ytDlpArgs]);
+        ytDlpProcess.stdout.on("data", (data) => {
+          const output = data.toString();
 
-          ytDlpProcess.stdout.on("data", (data) => {
-            const output = data.toString();
+          const progressMatch = output.match(/\[download\]\s+(\d+\.?\d*)%/);
+          const sizeMatch = output.match(/of\s+([\d.]+[A-Za-z]+)/);
+          const speedMatch = output.match(/at\s+([\d.]+[A-Za-z]+\/s)/);
+          const etaMatch = output.match(/ETA\s+(\d+:\d+)/);
 
-            const progressMatch = output.match(/\[download\]\s+(\d+\.?\d*)%/);
-            const sizeMatch = output.match(/of\s+([\d.]+[A-Za-z]+)/);
-            const speedMatch = output.match(/at\s+([\d.]+[A-Za-z]+\/s)/);
-            const etaMatch = output.match(/ETA\s+(\d+:\d+)/);
+          if (progressMatch) {
+            const progress = parseFloat(progressMatch[1]);
 
-            if (progressMatch) {
-              const progress = parseFloat(progressMatch[1]);
-
-              if (Math.abs(progress - lastProgress) >= 1 && progressCallback) {
-                if (sizeMatch) lastDownloadedSize = sizeMatch[1];
-                if (speedMatch) lastSpeed = speedMatch[1];
-
-                progressCallback({
-                  progress: progress,
-                  downloaded: sizeMatch ? sizeMatch[1] : lastDownloadedSize,
-                  speed: speedMatch ? speedMatch[1] : lastSpeed,
-                  timeLeft: etaMatch ? etaMatch[1] : null,
-                  stage: progress < 90 ? "Downloading" : "Merging",
-                  isReal: true,
-                });
-                lastProgress = progress;
-              }
-            }
-          });
-
-          ytDlpProcess.stderr.on("data", (data) => {
-            console.log(`yt-dlp: ${data.toString()}`);
-          });
-
-          ytDlpProcess.on("close", (code) => {
-            if (code === 0) resolve();
-            else reject(new Error("Download failed"));
-          });
-
-          ytDlpProcess.on("error", (error) => {
-            reject(error);
-          });
-        });
-
-        // ✅ SUCCESS! File downloaded
-        const stats = await fs.stat(tempFile);
-        const fileSize = stats.size;
-
-        if (fileSize > MAX_FILE_SIZE) {
-          await fs.remove(tempFile).catch(() => {});
-          throw {
-            message: "FILE_TOO_LARGE",
-            code: "FILE_TOO_LARGE",
-            estimatedSize: fileSize,
-            maxSize: MAX_FILE_SIZE,
-          };
-        }
-
-        console.log(`✅ [${downloadId}] Success on attempt ${attempt}!`);
-        console.log(`✓ File ready (${this.formatFileSize(fileSize)})`);
-
-        // Upload to R2
-        if (progressCallback) {
-          progressCallback({
-            progress: 95,
-            stage: "Uploading to cloud",
-            downloaded: lastDownloadedSize || this.formatFileSize(fileSize),
-            speed: null,
-            timeLeft: "Almost done",
-            isReal: true,
-          });
-        }
-
-        console.log(`☁️ [${downloadId}] Uploading to R2...`);
-
-        const key = `downloads/${Date.now()}_${crypto.randomBytes(8).toString("hex")}_${fileName}`;
-        const fileStream = fs.createReadStream(tempFile);
-
-        const upload = new Upload({
-          client: this.r2Client,
-          params: {
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: key,
-            Body: fileStream,
-            ContentType: contentType,
-            ContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
-            CacheControl: "public, max-age=1800",
-          },
-          queueSize: 4,
-          partSize: 100 * 1024 * 1024,
-          leavePartsOnError: false,
-        });
-
-        if (progressCallback) {
-          upload.on("httpUploadProgress", (progress) => {
-            if (progress.loaded && progress.total) {
-              const uploadPercent = (progress.loaded / progress.total) * 100;
-              const mappedProgress = 95 + uploadPercent * 0.049;
+            if (Math.abs(progress - lastProgress) >= 1 && progressCallback) {
+              // 🔥 SAVE these values!
+              if (sizeMatch) lastDownloadedSize = sizeMatch[1];
+              if (speedMatch) lastSpeed = speedMatch[1];
 
               progressCallback({
-                progress: Math.min(mappedProgress, 99.9),
-                stage: "Uploading to cloud",
-                downloaded: lastDownloadedSize || this.formatFileSize(fileSize),
-                speed: null,
-                timeLeft: uploadPercent > 50 ? "Few seconds" : "Uploading",
+                progress: progress,
+                downloaded: sizeMatch ? sizeMatch[1] : lastDownloadedSize,
+                speed: speedMatch ? speedMatch[1] : lastSpeed,
+                timeLeft: etaMatch ? etaMatch[1] : null,
+                stage: progress < 90 ? "Downloading" : "Merging",
                 isReal: true,
               });
+              lastProgress = progress;
             }
-          });
-        }
-
-        await upload.done();
-
-        if (progressCallback) {
-          progressCallback({
-            progress: 100,
-            stage: "Complete",
-            downloaded: lastDownloadedSize || this.formatFileSize(fileSize),
-            speed: null,
-            timeLeft: null,
-            isReal: true,
-          });
-        }
-
-        console.log(`✓ [${downloadId}] Upload complete`);
-
-        const downloadUrl = await getSignedUrl(
-          this.r2Client,
-          new GetObjectCommand({
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: key,
-          }),
-          { expiresIn: 1800 },
-        );
-
-        await fs.remove(tempFile).catch(() => {});
-        console.log(`🗑️ [${downloadId}] Temp file deleted`);
-
-        return {
-          success: true,
-          downloadUrl,
-          fileSize,
-          quality,
-          format,
-        };
-      } catch (error) {
-        lastError = error;
-        console.error(
-          `❌ [${downloadId}] Attempt ${attempt} failed:`,
-          error.message,
-        );
-
-        // Clean up temp file
-        try {
-          if (await fs.pathExists(tempFile)) {
-            await fs.remove(tempFile);
           }
-        } catch {}
+        });
 
-        // 🔥 SMART RETRY DECISION
-        const shouldRetry = this.shouldRetryDownload(
-          error,
-          attempt,
-          MAX_ATTEMPTS,
-          platform,
-        );
+        ytDlpProcess.stderr.on("data", (data) => {
+          console.log(`yt-dlp: ${data.toString()}`);
+        });
 
-        if (shouldRetry && attempt < MAX_ATTEMPTS) {
-          console.log(`🔄 [${downloadId}] Retrying with different strategy...`);
-          await new Promise((r) => setTimeout(r, 2000)); // Wait 2 seconds
-          continue;
+        ytDlpProcess.on("close", (code) => {
+          if (code === 0) resolve();
+          else reject(new Error("Download failed"));
+        });
+
+        ytDlpProcess.on("error", (error) => {
+          reject(error);
+        });
+      });
+
+      const stats = await fs.stat(tempFile);
+      const fileSize = stats.size;
+
+      if (fileSize > MAX_FILE_SIZE) {
+        await fs.remove(tempFile).catch(() => {});
+        throw {
+          message: "FILE_TOO_LARGE",
+          code: "FILE_TOO_LARGE",
+          estimatedSize: fileSize,
+          maxSize: MAX_FILE_SIZE,
+        };
+      }
+
+      console.log(
+        `✓ [${downloadId}] File ready (${this.formatFileSize(fileSize)})`,
+      );
+
+      // 🔥 CRITICAL FIX: Show "Uploading" with last known stats!
+      if (progressCallback) {
+        progressCallback({
+          progress: 95,
+          stage: "Uploading to cloud",
+          downloaded: lastDownloadedSize || this.formatFileSize(fileSize),
+          speed: null,
+          timeLeft: "Almost done",
+          isReal: true,
+        });
+      }
+
+      console.log(`☁️ [${downloadId}] Uploading to R2...`);
+
+      const key = `downloads/${Date.now()}_${crypto.randomBytes(8).toString("hex")}_${fileName}`;
+      const fileStream = fs.createReadStream(tempFile);
+
+      const upload = new Upload({
+        client: this.r2Client,
+        params: {
+          Bucket: process.env.R2_BUCKET_NAME,
+          Key: key,
+          Body: fileStream,
+          ContentType: contentType,
+          ContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+          CacheControl: "public, max-age=1800",
+        },
+        queueSize: 4,
+        partSize: 100 * 1024 * 1024,
+        leavePartsOnError: false,
+      });
+
+      // 🔥 Keep showing stats during R2 upload!
+      if (progressCallback) {
+        upload.on("httpUploadProgress", (progress) => {
+          if (progress.loaded && progress.total) {
+            const uploadPercent = (progress.loaded / progress.total) * 100;
+            const mappedProgress = 95 + uploadPercent * 0.049; // 95% -> 99.9%
+
+            progressCallback({
+              progress: Math.min(mappedProgress, 99.9),
+              stage: "Uploading to cloud",
+              downloaded: lastDownloadedSize || this.formatFileSize(fileSize),
+              speed: null,
+              timeLeft: uploadPercent > 50 ? "Few seconds" : "Uploading",
+              isReal: true,
+            });
+          }
+        });
+      }
+
+      await upload.done();
+
+      // 🔥 Final 100%
+      if (progressCallback) {
+        progressCallback({
+          progress: 100,
+          stage: "Complete",
+          downloaded: lastDownloadedSize || this.formatFileSize(fileSize),
+          speed: null,
+          timeLeft: null,
+          isReal: true,
+        });
+      }
+
+      console.log(`✓ [${downloadId}] Upload complete`);
+
+      const downloadUrl = await getSignedUrl(
+        this.r2Client,
+        new GetObjectCommand({
+          Bucket: process.env.R2_BUCKET_NAME,
+          Key: key,
+        }),
+        { expiresIn: 1800 },
+      );
+
+      await fs.remove(tempFile).catch(() => {});
+      console.log(`🗑️ [${downloadId}] Temp file deleted`);
+
+      return {
+        success: true,
+        downloadUrl,
+        fileSize,
+        quality,
+        format,
+      };
+    } catch (error) {
+      try {
+        if (await fs.pathExists(tempFile)) {
+          await fs.remove(tempFile);
         }
-
-        // No more retries, throw error
-        throw lastError;
-      }
+      } catch {}
+      throw error;
     }
-
-    // All attempts failed
-    throw lastError;
   }
-  /**
-   * 🔥 ENTERPRISE: Determine if download should be retried
-   */
-  shouldRetryDownload(error, attempt, maxAttempts, platform) {
-    if (attempt >= maxAttempts) return false;
-
-    const errorMsg = (error.message || "").toLowerCase();
-
-    // ✅ ALWAYS retry these errors
-    const retryableErrors = [
-      "page needs to be reloaded",
-      "server timeout",
-      "connection",
-      "network",
-      "timeout",
-      "429", // Too many requests
-      "503", // Service unavailable
-    ];
-
-    for (const retryError of retryableErrors) {
-      if (errorMsg.includes(retryError)) {
-        console.log(`✅ Retryable error detected: ${retryError}`);
-        return true;
-      }
-    }
-
-    // ❌ NEVER retry these errors
-    const nonRetryableErrors = [
-      "private",
-      "unavailable",
-      "removed",
-      "deleted",
-      "copyright",
-      "geo-restricted",
-      "members-only",
-      "file_too_large",
-    ];
-
-    for (const noRetry of nonRetryableErrors) {
-      if (errorMsg.includes(noRetry)) {
-        console.log(`❌ Non-retryable error: ${noRetry}`);
-        return false;
-      }
-    }
-
-    // 🔥 YouTube-specific: Always retry on attempt 1 (switch to cookies)
-    if (platform === "youtube" && attempt === 1) {
-      console.log(`🔄 YouTube: Switching to cookie strategy`);
-      return true;
-    }
-
-    // Default: retry once more
-    return attempt < 2;
-  }
-  // async streamDirectlyToR2(options, progressCallback = null) {
-  //   const {
-  //     url,
-  //     quality,
-  //     format,
-  //     audioOnly,
-  //     fileName,
-  //     contentType,
-  //     downloadId,
-  //     platform,
-  //   } = options;
-
-  //   const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
-
-  //   try {
-  //     const ytDlpArgs = this.buildDownloadOptions({
-  //       quality,
-  //       format,
-  //       audioOnly,
-  //       platform,
-  //     });
-
-  //     ytDlpArgs.push("-o", tempFile);
-
-  //     console.log(`⬇️ [${downloadId}] Downloading and merging audio+video...`);
-
-  //     const { spawn } = require("child_process");
-
-  //     // 🔥 Store last known values
-  //     let lastDownloadedSize = null;
-  //     let lastSpeed = null;
-  //     let lastProgress = 0;
-
-  //     await new Promise((resolve, reject) => {
-  //       const ytDlpProcess = spawn("yt-dlp", [url, ...ytDlpArgs]);
-
-  //       ytDlpProcess.stdout.on("data", (data) => {
-  //         const output = data.toString();
-
-  //         const progressMatch = output.match(/\[download\]\s+(\d+\.?\d*)%/);
-  //         const sizeMatch = output.match(/of\s+([\d.]+[A-Za-z]+)/);
-  //         const speedMatch = output.match(/at\s+([\d.]+[A-Za-z]+\/s)/);
-  //         const etaMatch = output.match(/ETA\s+(\d+:\d+)/);
-
-  //         if (progressMatch) {
-  //           const progress = parseFloat(progressMatch[1]);
-
-  //           if (Math.abs(progress - lastProgress) >= 1 && progressCallback) {
-  //             // 🔥 SAVE these values!
-  //             if (sizeMatch) lastDownloadedSize = sizeMatch[1];
-  //             if (speedMatch) lastSpeed = speedMatch[1];
-
-  //             progressCallback({
-  //               progress: progress,
-  //               downloaded: sizeMatch ? sizeMatch[1] : lastDownloadedSize,
-  //               speed: speedMatch ? speedMatch[1] : lastSpeed,
-  //               timeLeft: etaMatch ? etaMatch[1] : null,
-  //               stage: progress < 90 ? "Downloading" : "Merging",
-  //               isReal: true,
-  //             });
-  //             lastProgress = progress;
-  //           }
-  //         }
-  //       });
-
-  //       ytDlpProcess.stderr.on("data", (data) => {
-  //         console.log(`yt-dlp: ${data.toString()}`);
-  //       });
-
-  //       ytDlpProcess.on("close", (code) => {
-  //         if (code === 0) resolve();
-  //         else reject(new Error("Download failed"));
-  //       });
-
-  //       ytDlpProcess.on("error", (error) => {
-  //         reject(error);
-  //       });
-  //     });
-
-  //     const stats = await fs.stat(tempFile);
-  //     const fileSize = stats.size;
-
-  //     if (fileSize > MAX_FILE_SIZE) {
-  //       await fs.remove(tempFile).catch(() => {});
-  //       throw {
-  //         message: "FILE_TOO_LARGE",
-  //         code: "FILE_TOO_LARGE",
-  //         estimatedSize: fileSize,
-  //         maxSize: MAX_FILE_SIZE,
-  //       };
-  //     }
-
-  //     console.log(
-  //       `✓ [${downloadId}] File ready (${this.formatFileSize(fileSize)})`,
-  //     );
-
-  //     // 🔥 CRITICAL FIX: Show "Uploading" with last known stats!
-  //     if (progressCallback) {
-  //       progressCallback({
-  //         progress: 95,
-  //         stage: "Uploading to cloud",
-  //         downloaded: lastDownloadedSize || this.formatFileSize(fileSize),
-  //         speed: null,
-  //         timeLeft: "Almost done",
-  //         isReal: true,
-  //       });
-  //     }
-
-  //     console.log(`☁️ [${downloadId}] Uploading to R2...`);
-
-  //     const key = `downloads/${Date.now()}_${crypto.randomBytes(8).toString("hex")}_${fileName}`;
-  //     const fileStream = fs.createReadStream(tempFile);
-
-  //     const upload = new Upload({
-  //       client: this.r2Client,
-  //       params: {
-  //         Bucket: process.env.R2_BUCKET_NAME,
-  //         Key: key,
-  //         Body: fileStream,
-  //         ContentType: contentType,
-  //         ContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
-  //         CacheControl: "public, max-age=1800",
-  //       },
-  //       queueSize: 4,
-  //       partSize: 100 * 1024 * 1024,
-  //       leavePartsOnError: false,
-  //     });
-
-  //     // 🔥 Keep showing stats during R2 upload!
-  //     if (progressCallback) {
-  //       upload.on("httpUploadProgress", (progress) => {
-  //         if (progress.loaded && progress.total) {
-  //           const uploadPercent = (progress.loaded / progress.total) * 100;
-  //           const mappedProgress = 95 + uploadPercent * 0.049; // 95% -> 99.9%
-
-  //           progressCallback({
-  //             progress: Math.min(mappedProgress, 99.9),
-  //             stage: "Uploading to cloud",
-  //             downloaded: lastDownloadedSize || this.formatFileSize(fileSize),
-  //             speed: null,
-  //             timeLeft: uploadPercent > 50 ? "Few seconds" : "Uploading",
-  //             isReal: true,
-  //           });
-  //         }
-  //       });
-  //     }
-
-  //     await upload.done();
-
-  //     // 🔥 Final 100%
-  //     if (progressCallback) {
-  //       progressCallback({
-  //         progress: 100,
-  //         stage: "Complete",
-  //         downloaded: lastDownloadedSize || this.formatFileSize(fileSize),
-  //         speed: null,
-  //         timeLeft: null,
-  //         isReal: true,
-  //       });
-  //     }
-
-  //     console.log(`✓ [${downloadId}] Upload complete`);
-
-  //     const downloadUrl = await getSignedUrl(
-  //       this.r2Client,
-  //       new GetObjectCommand({
-  //         Bucket: process.env.R2_BUCKET_NAME,
-  //         Key: key,
-  //       }),
-  //       { expiresIn: 1800 },
-  //     );
-
-  //     await fs.remove(tempFile).catch(() => {});
-  //     console.log(`🗑️ [${downloadId}] Temp file deleted`);
-
-  //     return {
-  //       success: true,
-  //       downloadUrl,
-  //       fileSize,
-  //       quality,
-  //       format,
-  //     };
-  //   } catch (error) {
-  //     try {
-  //       if (await fs.pathExists(tempFile)) {
-  //         await fs.remove(tempFile);
-  //       }
-  //     } catch {}
-  //     throw error;
-  //   }
-  // }
 
   // 🔥 UPDATED: Line ~16 - Add this line to fix Instagram
   // Replace this in your videoDownloader.js
-  buildDownloadOptions({ quality, format, audioOnly, platform, attempt = 1 }) {
+
+  buildDownloadOptions({ quality, format, audioOnly, platform }) {
     const options = [];
 
     // ============================================
@@ -1144,12 +869,18 @@ class VideoDownloaderService {
     }
 
     // ============================================
-    // ✅ TIKTOK
+    // ✅ TIKTOK - Pre-merged streams, special API
     // ============================================
     else if (platform === "tiktok") {
-      const heightMap = { highest: 1080, high: 720, medium: 540, low: 360 };
+      const heightMap = {
+        highest: 1080,
+        high: 720,
+        medium: 540,
+        low: 360,
+      };
       const maxHeight = heightMap[quality] || 720;
 
+      // ✅ NEW
       options.push(
         "-f",
         `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/b`,
@@ -1162,14 +893,16 @@ class VideoDownloaderService {
         "--add-header",
         "Accept-Language:en-US,en;q=0.9",
       );
-      cookieManager.addCookieOptions(options, platform);
-    }
 
-    // ============================================
-    // ✅ INSTAGRAM
-    // ============================================
-    else if (platform === "instagram") {
-      const heightMap = { highest: 720, high: 720, medium: 480, low: 360 };
+      // 🔥 Add TikTok cookies if available
+      cookieManager.addCookieOptions(options, platform);
+    } else if (platform === "instagram") {
+      const heightMap = {
+        highest: 720,
+        high: 720,
+        medium: 480,
+        low: 360,
+      };
       const maxHeight = heightMap[quality] || 480;
 
       options.push(
@@ -1191,27 +924,39 @@ class VideoDownloaderService {
         "Accept-Language:en-US,en;q=0.9",
         "--legacy-server-connect",
       );
-      cookieManager.addCookieOptions(options, platform);
+
+      const hasCookies = cookieManager.addCookieOptions(options, platform);
+      if (!hasCookies) {
+        console.log("⚠️  [INSTAGRAM] No cookies! Download may fail.");
+      }
     }
 
     // ============================================
-    // ✅ TWITTER/X
+    // ✅ TWITTER/X - Pre-merged + COOKIES
     // ============================================
     else if (platform === "twitter") {
-      const heightMap = { highest: 1080, high: 720, medium: 480, low: 360 };
+      const heightMap = {
+        highest: 1080,
+        high: 720,
+        medium: 480,
+        low: 360,
+      };
       const maxHeight = heightMap[quality] || 720;
+
       options.push(
         "-f",
         `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
       );
-      cookieManager.addCookieOptions(options, platform);
-    }
 
-    // ============================================
-    // ✅ THREADS
-    // ============================================
-    else if (platform === "threads") {
-      const heightMap = { highest: 1080, high: 720, medium: 480, low: 360 };
+      // 🔥 Add Twitter cookies if available
+      cookieManager.addCookieOptions(options, platform);
+    } else if (platform === "threads") {
+      const heightMap = {
+        highest: 1080,
+        high: 720,
+        medium: 480,
+        low: 360,
+      };
       const maxHeight = heightMap[quality] || 720;
 
       options.push(
@@ -1228,24 +973,38 @@ class VideoDownloaderService {
         "--add-header",
         "Accept-Language:en-US,en;q=0.9",
       );
-      cookieManager.addCookieOptions(options, "instagram");
-    }
 
+      // Threads uses Instagram cookies
+      const hasCookies = cookieManager.addCookieOptions(options, "instagram");
+      if (!hasCookies) {
+        console.log(
+          "⚠️  [THREADS] No cookies — download may fail for some posts",
+        );
+      }
+    }
     // ============================================
-    // ✅ FACEBOOK
+    // ✅ FACEBOOK - Pre-merged + COOKIES
     // ============================================
     else if (platform === "facebook") {
-      const heightMap = { highest: 1080, high: 720, medium: 480, low: 360 };
+      const heightMap = {
+        highest: 1080,
+        high: 720,
+        medium: 480,
+        low: 360,
+      };
       const maxHeight = heightMap[quality] || 720;
+
       options.push(
         "-f",
         `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
       );
+
+      // 🔥 Add Facebook cookies if available
       cookieManager.addCookieOptions(options, platform);
     }
 
     // ============================================
-    // ✅ REDDIT
+    // ✅ REDDIT - Simple best
     // ============================================
     else if (platform === "reddit") {
       options.push("-f", "best[ext=mp4]/best");
@@ -1255,7 +1014,12 @@ class VideoDownloaderService {
     // ✅ YOUTUBE + VIMEO + ALL OTHERS
     // ============================================
     else {
-      const heightMap = { highest: 1080, high: 720, medium: 720, low: 480 };
+      const heightMap = {
+        highest: 1080,
+        high: 720,
+        medium: 720,
+        low: 480,
+      };
       const maxHeight = heightMap[quality] || 720;
 
       if (format === "mp4") {
@@ -1278,7 +1042,7 @@ class VideoDownloaderService {
     }
 
     // ============================================
-    // ✅ UNIVERSAL FLAGS
+    // ✅ UNIVERSAL FLAGS - ALL PLATFORMS
     // ============================================
     options.push(
       "--no-playlist",
@@ -1296,288 +1060,13 @@ class VideoDownloaderService {
       "node",
     );
 
-    // ============================================
-    // 🔥 YOUTUBE - ENTERPRISE MULTI-STRATEGY
-    // How SnapTik, Y2Mate, SaveFrom do it!
-    // ============================================
+    // ✅ YouTube cookies (already working)
     if (platform === "youtube") {
-      // 🔥 STRATEGY ROTATION BASED ON ATTEMPT
-      if (attempt === 1) {
-        // ✅ ATTEMPT 1: Android/iOS clients (NO COOKIES NEEDED!)
-        console.log(
-          "🤖 [YOUTUBE] Strategy 1: Android/iOS clients (cookieless)",
-        );
-        options.push(
-          // Primary: Use mobile clients (most reliable!)
-          "--extractor-args",
-          "youtube:player_client=android,ios,mweb",
-
-          // Skip slow webpage parsing
-          "--extractor-args",
-          "youtube:player_skip=webpage,configs",
-
-          // Avoid DASH/HLS complexity
-          "--extractor-args",
-          "youtube:skip=dash,hls",
-
-          // Geo-bypass
-          "--geo-bypass",
-          "--geo-bypass-country",
-          "US",
-        );
-
-        // Cookies are OPTIONAL (don't fail if missing!)
-        // DO NOT USE COOKIES on first attempt - they're blocked!
-      } else if (attempt === 2) {
-        // ✅ ATTEMPT 2: Web client with cookies (fallback)
-        console.log("🌐 [YOUTUBE] Strategy 2: Web client with cookies");
-        options.push(
-          "--extractor-args",
-          "youtube:player_client=web,mweb",
-          "--geo-bypass-country",
-          "US",
-        );
-
-        // Now try cookies
-        try {
-          cookieManager.addCookieOptions(options, platform);
-        } catch (e) {
-          console.log("⚠️ No cookies available for attempt 2");
-        }
-      } else {
-        // ✅ ATTEMPT 3+: iOS only (last resort)
-        console.log("📱 [YOUTUBE] Strategy 3: iOS client only");
-        options.push(
-          "--extractor-args",
-          "youtube:player_client=ios",
-          "--extractor-args",
-          "youtube:player_skip=webpage",
-          "--geo-bypass-country",
-          "US",
-        );
-      }
+      options.push("--geo-bypass-country", "US");
+      cookieManager.addCookieOptions(options, platform);
     }
-
     return options;
   }
-  // buildDownloadOptions({ quality, format, audioOnly, platform }) {
-  //   const options = [];
-
-  //   // ============================================
-  //   // ✅ AUDIO ONLY
-  //   // ============================================
-  //   if (audioOnly || format === "mp3") {
-  //     options.push("-f", "bestaudio/best");
-  //     if (format === "mp3") {
-  //       options.push(
-  //         "--extract-audio",
-  //         "--audio-format",
-  //         "mp3",
-  //         "--audio-quality",
-  //         "0",
-  //       );
-  //     }
-  //   }
-
-  //   // ============================================
-  //   // ✅ TIKTOK - Pre-merged streams, special API
-  //   // ============================================
-  //   else if (platform === "tiktok") {
-  //     const heightMap = {
-  //       highest: 1080,
-  //       high: 720,
-  //       medium: 540,
-  //       low: 360,
-  //     };
-  //     const maxHeight = heightMap[quality] || 720;
-
-  //     // ✅ NEW
-  //     options.push(
-  //       "-f",
-  //       `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/b`,
-  //       "--extractor-args",
-  //       "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
-  //       "--impersonate",
-  //       "chrome-110",
-  //       "--add-header",
-  //       "Referer:https://www.tiktok.com/",
-  //       "--add-header",
-  //       "Accept-Language:en-US,en;q=0.9",
-  //     );
-
-  //     // 🔥 Add TikTok cookies if available
-  //     cookieManager.addCookieOptions(options, platform);
-  //   } else if (platform === "instagram") {
-  //     const heightMap = {
-  //       highest: 720,
-  //       high: 720,
-  //       medium: 480,
-  //       low: 360,
-  //     };
-  //     const maxHeight = heightMap[quality] || 480;
-
-  //     options.push(
-  //       "-f",
-  //       `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/best`,
-  //       "--user-agent",
-  //       "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 Instagram/311.0.0.34.109",
-  //       "--add-header",
-  //       "Referer:https://www.instagram.com/",
-  //       "--add-header",
-  //       "Origin:https://www.instagram.com",
-  //       "--add-header",
-  //       "X-IG-App-ID:936619743392459",
-  //       "--add-header",
-  //       "X-ASBD-ID:129477",
-  //       "--add-header",
-  //       "X-IG-WWW-Claim:0",
-  //       "--add-header",
-  //       "Accept-Language:en-US,en;q=0.9",
-  //       "--legacy-server-connect",
-  //     );
-
-  //     const hasCookies = cookieManager.addCookieOptions(options, platform);
-  //     if (!hasCookies) {
-  //       console.log("⚠️  [INSTAGRAM] No cookies! Download may fail.");
-  //     }
-  //   }
-
-  //   // ============================================
-  //   // ✅ TWITTER/X - Pre-merged + COOKIES
-  //   // ============================================
-  //   else if (platform === "twitter") {
-  //     const heightMap = {
-  //       highest: 1080,
-  //       high: 720,
-  //       medium: 480,
-  //       low: 360,
-  //     };
-  //     const maxHeight = heightMap[quality] || 720;
-
-  //     options.push(
-  //       "-f",
-  //       `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
-  //     );
-
-  //     // 🔥 Add Twitter cookies if available
-  //     cookieManager.addCookieOptions(options, platform);
-  //   } else if (platform === "threads") {
-  //     const heightMap = {
-  //       highest: 1080,
-  //       high: 720,
-  //       medium: 480,
-  //       low: 360,
-  //     };
-  //     const maxHeight = heightMap[quality] || 720;
-
-  //     options.push(
-  //       "-f",
-  //       `b[ext=mp4][height<=${maxHeight}]/b[ext=mp4]/best`,
-  //       "--user-agent",
-  //       "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 Instagram/311.0.0.34.109",
-  //       "--add-header",
-  //       "Referer:https://www.threads.net/",
-  //       "--add-header",
-  //       "Origin:https://www.threads.net",
-  //       "--add-header",
-  //       "X-IG-App-ID:936619743392459",
-  //       "--add-header",
-  //       "Accept-Language:en-US,en;q=0.9",
-  //     );
-
-  //     // Threads uses Instagram cookies
-  //     const hasCookies = cookieManager.addCookieOptions(options, "instagram");
-  //     if (!hasCookies) {
-  //       console.log(
-  //         "⚠️  [THREADS] No cookies — download may fail for some posts",
-  //       );
-  //     }
-  //   }
-  //   // ============================================
-  //   // ✅ FACEBOOK - Pre-merged + COOKIES
-  //   // ============================================
-  //   else if (platform === "facebook") {
-  //     const heightMap = {
-  //       highest: 1080,
-  //       high: 720,
-  //       medium: 480,
-  //       low: 360,
-  //     };
-  //     const maxHeight = heightMap[quality] || 720;
-
-  //     options.push(
-  //       "-f",
-  //       `best[ext=mp4][height<=${maxHeight}]/best[ext=mp4]/best`,
-  //     );
-
-  //     // 🔥 Add Facebook cookies if available
-  //     cookieManager.addCookieOptions(options, platform);
-  //   }
-
-  //   // ============================================
-  //   // ✅ REDDIT - Simple best
-  //   // ============================================
-  //   else if (platform === "reddit") {
-  //     options.push("-f", "best[ext=mp4]/best");
-  //   }
-
-  //   // ============================================
-  //   // ✅ YOUTUBE + VIMEO + ALL OTHERS
-  //   // ============================================
-  //   else {
-  //     const heightMap = {
-  //       highest: 1080,
-  //       high: 720,
-  //       medium: 720,
-  //       low: 480,
-  //     };
-  //     const maxHeight = heightMap[quality] || 720;
-
-  //     if (format === "mp4") {
-  //       options.push(
-  //         "-f",
-  //         `bv*[ext=mp4][height<=${maxHeight}]+ba[ext=m4a]/b[ext=mp4][height<=${maxHeight}]/best[height<=${maxHeight}]/best`,
-  //         "--merge-output-format",
-  //         "mp4",
-  //       );
-  //     } else if (format === "webm") {
-  //       options.push(
-  //         "-f",
-  //         `bv*[height<=${maxHeight}]+ba/best[height<=${maxHeight}]/best`,
-  //         "--merge-output-format",
-  //         "webm",
-  //       );
-  //     } else {
-  //       options.push("-f", `best[height<=${maxHeight}]/best`);
-  //     }
-  //   }
-
-  //   // ============================================
-  //   // ✅ UNIVERSAL FLAGS - ALL PLATFORMS
-  //   // ============================================
-  //   options.push(
-  //     "--no-playlist",
-  //     "--socket-timeout",
-  //     "30",
-  //     "--retries",
-  //     "10",
-  //     "--fragment-retries",
-  //     "10",
-  //     "--retry-sleep",
-  //     "3",
-  //     "--file-access-retries",
-  //     "5",
-  //     "--js-runtimes",
-  //     "node",
-  //   );
-
-  //   // ✅ YouTube cookies (already working)
-  //   if (platform === "youtube") {
-  //     options.push("--geo-bypass-country", "US");
-  //     cookieManager.addCookieOptions(options, platform);
-  //   }
-  //   return options;
-  // }
   estimateFileSize(durationSeconds, quality, platform = "generic") {
     if (!durationSeconds || durationSeconds <= 0) return 0;
 
@@ -1636,68 +1125,29 @@ class VideoDownloaderService {
     return Math.ceil(estimated);
   }
 
-  // getUserFriendlyError(errorMessage) {
-  //   const errorMap = {
-  //     private: "This video is private and cannot be downloaded.",
-  //     unavailable: "This video is no longer available.",
-  //     removed: "This video has been removed.",
-  //     "age-restricted":
-  //       "This video is age-restricted and cannot be downloaded.",
-  //     copyright: "This video is protected by copyright.",
-  //     "geo-restricted": "This video is not available in your region.",
-  //     timeout: "Download timed out. Please try a lower quality.",
-  //     "members-only": "This video is only available to channel members.",
-  //   };
-
-  //   const lowerError = errorMessage.toLowerCase();
-  //   for (const [key, message] of Object.entries(errorMap)) {
-  //     if (lowerError.includes(key.toLowerCase())) {
-  //       return message;
-  //     }
-  //   }
-
-  //   return "Download failed. The video may be restricted or unavailable.";
-  // }
   getUserFriendlyError(errorMessage) {
-    const lowerError = (errorMessage || "").toLowerCase();
-
-    // 🔥 YouTube-specific errors
-    if (lowerError.includes("page needs to be reloaded")) {
-      return "YouTube is blocking automated access. Our system is trying different methods. If this persists, try TikTok or Instagram which work reliably!";
-    }
-
-    if (
-      lowerError.includes("not made this video available in your country") ||
-      lowerError.includes("not available in your country") ||
-      lowerError.includes("uploader has not made this video available")
-    ) {
-      return "⚠️ This video is geo-restricted and not available in all regions. Try a different video or use TikTok/Instagram.";
-    }
-
-    // Standard errors
     const errorMap = {
       private: "This video is private and cannot be downloaded.",
       unavailable: "This video is no longer available.",
       removed: "This video has been removed.",
-      "age-restricted": "This video is age-restricted and requires login.",
+      "age-restricted":
+        "This video is age-restricted and cannot be downloaded.",
       copyright: "This video is protected by copyright.",
-      timeout: "Download timed out. Please try a lower quality or try again.",
+      "geo-restricted": "This video is not available in your region.",
+      timeout: "Download timed out. Please try a lower quality.",
       "members-only": "This video is only available to channel members.",
-      "login required": "This content requires login. Try a public video.",
-      "rate-limit": "Too many requests. Please wait a moment.",
-      connection: "Network connection error. Please try again.",
-      "server error": "Server error. Please try again in a moment.",
     };
 
+    const lowerError = errorMessage.toLowerCase();
     for (const [key, message] of Object.entries(errorMap)) {
-      if (lowerError.includes(key)) {
+      if (lowerError.includes(key.toLowerCase())) {
         return message;
       }
     }
 
-    // Generic fallback with helpful suggestion
-    return "Download failed. This video may be restricted. For best results, try TikTok or Instagram - they work great! If the issue persists, try a lower quality.";
+    return "Download failed. The video may be restricted or unavailable.";
   }
+
   async createDownloadRecord(options) {
     try {
       const { url, detection, quality, format, userIP, userAgent } = options;
