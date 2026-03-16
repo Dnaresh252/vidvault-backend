@@ -1,9 +1,6 @@
-# Force rebuild - v20260316-008
-FROM node:20-bullseye-slim
-
-# Cache buster
-ARG CACHEBUST=20260316-008
-RUN echo "Build timestamp: $CACHEBUST"
+# Force rebuild - Python 3.9 compatible
+FROM node:20-slim
+ARG CACHEBUST=20260316-final
 
 RUN apt-get update && apt-get install -y \
     python3 \
@@ -15,17 +12,14 @@ RUN apt-get update && apt-get install -y \
     gcc \
     python3-dev \
     libssl-dev \
-    wget \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install latest yt-dlp binary directly from GitHub (BEST WAY!)
-RUN echo "Installing latest yt-dlp binary at $(date)" && \
-    wget -O /opt/venv/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp && \
-    chmod a+rx /opt/venv/bin/yt-dlp && \
-    echo "Final version:" && \
+# Install yt-dlp via pip (Python 3.9 compatible version)
+RUN echo "Installing yt-dlp (Python 3.9 compatible) - Build: $CACHEBUST" && \
+    pip install --no-cache-dir -U --pre "yt-dlp[default]" && \
     yt-dlp --version
 
 RUN pip install --no-cache-dir curl-cffi
@@ -37,7 +31,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --only=production
 
-RUN echo "Copying code at $(date)"
+# Force fresh code copy
+RUN echo "Code copy timestamp: $(date)"
 COPY . .
 
 RUN mkdir -p /tmp/downloads /tmp/temp /tmp/ig-images && \
