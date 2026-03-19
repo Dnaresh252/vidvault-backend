@@ -42,8 +42,13 @@ RUN npm ci --only=production
 RUN echo "Code copy timestamp: $(date)"
 COPY . .
 
-RUN mkdir -p /tmp/downloads /tmp/temp /tmp/ig-images && \
-    chmod 777 /tmp/downloads /tmp/temp /tmp/ig-images
+RUN mkdir -p /tmp/downloads /tmp/temp /tmp/ig-images /tmp/cookies && \
+    chmod 777 /tmp/downloads /tmp/temp /tmp/ig-images /tmp/cookies
+
+COPY cookies/youtube_cookies.txt /tmp/cookies/youtube_cookies.txt
+COPY cookies/instagram_cookies.txt /tmp/cookies/instagram_cookies.txt
+RUN chmod 666 /tmp/cookies/youtube_cookies.txt && \
+    chmod 666 /tmp/cookies/instagram_cookies.txt
 
 USER node
 
