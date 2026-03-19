@@ -1057,7 +1057,9 @@ class VideoDownloaderService {
       "--file-access-retries",
       "5",
       "--js-runtimes",
-      "node",
+      "node:/usr/local/bin/node",
+      "--extractor-args",
+      "youtube:player_client=web,default",
     );
 
     // ✅ YouTube cookies (already working)
@@ -1191,7 +1193,9 @@ class VideoDownloaderService {
         "--socket-timeout",
         "20",
         "--js-runtimes",
-        "node",
+        "node:/usr/local/bin/node",
+        "--extractor-args",
+        "youtube:player_client=web,default",
       ];
 
       if (platform === "youtube") {
