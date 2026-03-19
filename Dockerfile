@@ -15,16 +15,23 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+ENV PATH="/opt/venv/bin:/usr/local/bin:$PATH"
 
-# Install yt-dlp via pip (Python 3.9 compatible version)
-RUN echo "Installing yt-dlp (Python 3.9 compatible) - Build: $CACHEBUST" && \
+# Install Python packages
+RUN echo "Installing yt-dlp - Build: $CACHEBUST" && \
     pip install --no-cache-dir -U --pre "yt-dlp[default]" && \
     yt-dlp --version
 
 RUN pip install --no-cache-dir curl-cffi
+RUN pip install --no-cache-dir yt-dlp-ejs
 RUN pip install --no-cache-dir gallery-dl
 RUN gallery-dl --version
+
+# Enterprise fix: hardcode node path so yt-dlp NEVER fails JS challenge
+RUN echo "--js-runtimes node:/usr/local/bin/node" > /etc/yt-dlp.conf
+
+# Verify node is accessible
+RUN node --version && yt-dlp --version
 
 WORKDIR /app
 
