@@ -31,9 +31,7 @@ const connectDB = require("./src/config/database");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-// Connect to Database
-connectDB();
+let server; // assigned after DB connects, referenced by graceful shutdown
 
 // Security middleware
 app.use(
@@ -72,6 +70,10 @@ app.use(
 // Compression and parsing
 app.use(compression());
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
+
+// Raw body for webhook MUST come before express.json()
+app.use('/api/v1/webhook', express.raw({ type: 'application/json' }));
+
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
@@ -144,6 +146,9 @@ app.get("/health", async (req, res) => {
 // Apply rate limiting to all API routes
 app.use("/api/v1", apiLimiter);
 
+// Razorpay webhook — must use raw body for signature verification
+app.use("/api/v1/webhook", require("./src/routes/webhook"));
+
 // API routes
 app.use("/api/v1/download", require("./src/routes/download"));
 app.use("/api/v1/instant", require("./src/routes/Instantroutes"));
@@ -177,11 +182,28 @@ app.use((req, res) => {
   });
 });
 
-// Start server
-const server = app.listen(PORT, () => {
-  console.log(`VidVault API running | Port: ${PORT} | ${process.env.NODE_ENV}`);
-  cleanupService.startCleanupJobs();
-});
+// Start server after DB is confirmed ready
+(async () => {
+  await connectDB();
+
+  // Initialize Telegram Bot (after MongoDB is established)
+  try {
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      require("./src/services/telegramBot");
+      console.log("🤖 Telegram Bot initialized");
+    } else {
+      console.log("⚠️ Telegram Bot token not found - bot disabled");
+    }
+  } catch (err) {
+    console.error("❌ Telegram Bot failed to initialize:", err.message);
+    // Non-fatal: server continues without bot
+  }
+
+  server = app.listen(PORT, () => {
+    console.log(`VidVault API running | Port: ${PORT} | ${process.env.NODE_ENV}`);
+    cleanupService.startCleanupJobs();
+  });
+})();
 
 // Graceful shutdown
 const gracefulShutdown = async (signal) => {

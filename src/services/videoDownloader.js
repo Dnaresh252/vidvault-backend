@@ -817,15 +817,7 @@ class VideoDownloaderService {
 
       console.log(`✓ [${downloadId}] Upload complete`);
 
-      const downloadUrl = await getSignedUrl(
-        this.r2Client,
-        new GetObjectCommand({
-          Bucket: process.env.R2_BUCKET_NAME,
-          Key: key,
-        }),
-        { expiresIn: 1800 },
-      );
-
+      const downloadUrl = `https://downloads.vidvaults.com/${key}`;
       await fs.remove(tempFile).catch(() => {});
       console.log(`🗑️ [${downloadId}] Temp file deleted`);
 
