@@ -526,7 +526,7 @@ bot.onText(/\/stats/, async (msg) => {
       `⭐ *Premium*\n` +
       `• Premium users: *${premiumUsers}*\n` +
       `• Monthly revenue: *₹${revenue}*\n\n` +
-      `📈 *Conversion rate:* *${totalUsers > 0 ? ((premiumUsers / totalUsers) * 100).toFixed(1) : 0}%*`,
+      `📈 *Conversion rate:* *${esc(totalUsers > 0 ? ((premiumUsers / totalUsers) * 100).toFixed(1) : "0")}%*`,
       { parse_mode: "MarkdownV2" }
     );
   } catch (err) {
