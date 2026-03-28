@@ -405,8 +405,8 @@ bot.onText(/\/referral/, async (msg) => {
       `🔗 *Your link:*\n${escUrl(referralLink)}\n\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `🎯 *Rewards:*\n` +
-      `• Every friend = *\\+2 bonus downloads*\n` +
-      `• 10 friends = *1 month Premium FREE* 🎉\n\n` +
+      `• Every friend \\= *\\+2 bonus downloads*\n` +
+      `• 10 friends \\= *1 month Premium FREE* 🎉\n\n` +
       `📊 *Your progress:*\n` +
       `${progressBar} ${user.referralCount}/10\n\n` +
       `${user.referralCount < 10
