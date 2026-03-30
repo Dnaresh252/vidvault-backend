@@ -47,7 +47,7 @@ class VideoDownloaderService {
     }
 
     this.activeDownloads = new Map();
-    this.maxConcurrentDownloads = 2;
+    this.maxConcurrentDownloads = 10;
 
     this.ensureDirectories();
     this.testDNSResolution();
