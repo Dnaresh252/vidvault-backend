@@ -671,33 +671,19 @@ bot.on("message", async (msg) => {
       return;
     }
 
-    // ── Transaction ID (manual payment fallback) ──────────
+    // ── Transaction ID (auto-activated via webhook, just reassure user) ──────────
     if (
-      text.length >= 12 &&
       !isVideoURL(text) &&
-      (text.match(/^[A-Z0-9]{12,}$/i) || text.match(/^\d{12,}$/) ||
-       text.toLowerCase().includes("upi") || text.toLowerCase().includes("transaction"))
+      (text.match(/^pay_[A-Z0-9]{14,}$/i) || text.match(/^order_[A-Z0-9]{14,}$/i) || text.match(/^sub_[A-Z0-9]{14,}$/i))
     ) {
       await bot.sendMessage(
         chatId,
-        `🔍 *Payment Verification*\n\n` +
-        `Transaction ID: \`${esc(text)}\`\n\n` +
-        `⏳ Verifying\\.\\.\\. Premium will activate within *2 minutes*\\.\n\n` +
-        `_We verify manually to ensure security\\._`,
+        `✅ *Payment Received\\!*\n\n` +
+        `Your premium is activated *automatically* after payment\\.\n\n` +
+        `Type /status to check your current plan\\.\n\n` +
+        `_If you just paid, it activates within seconds\\. No manual steps needed\\._`,
         { parse_mode: "MarkdownV2" }
       );
-      const adminId = process.env.TELEGRAM_ADMIN_ID;
-      if (adminId) {
-        await bot.sendMessage(
-          adminId,
-          `💰 *New Payment Received\\!*\n\n` +
-          `User: @${esc(user.username || user.firstName)}\n` +
-          `Telegram ID: \`${user.telegramId}\`\n` +
-          `Transaction: \`${esc(text)}\`\n\n` +
-          `To activate: /activate ${user.telegramId}`,
-          { parse_mode: "MarkdownV2" }
-        );
-      }
       return;
     }
 
