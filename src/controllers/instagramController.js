@@ -115,6 +115,24 @@ exports.downloadInstagram = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Instagram download error:", error.message);
+
+    // ── Alert admin on Telegram when Instagram fails ──
+    try {
+      const adminId = process.env.TELEGRAM_ADMIN_ID;
+      const botToken = process.env.TELEGRAM_BOT_TOKEN;
+      if (adminId && botToken) {
+        // Deduplicate alerts — only alert once every 30 mins
+        const now = Date.now();
+        if (!global._lastIgAlert || now - global._lastIgAlert > 30 * 60 * 1000) {
+          global._lastIgAlert = now;
+          const msg = `⚠️ *Instagram Download Failed*\n\nError: ${error.message}\nTime: ${new Date().toISOString()}\n\n🔧 *Action needed:* Refresh Instagram cookies`;
+          const url = `https://api.telegram.org/bot${botToken}/sendMessage?chat_id=${adminId}&text=${encodeURIComponent(msg)}&parse_mode=Markdown`;
+          const https = require("https");
+          https.get(url, () => {}).on("error", () => {});
+        }
+      }
+    } catch (e) {}
+
     return res.status(...resolveError(error.message));
   }
 };
