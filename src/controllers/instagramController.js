@@ -1,4 +1,5 @@
 const instagramImageService = require("../services/instagramImageService");
+const instagramOembed = require("../services/instagramOembed");
 const platformDetector = require("../services/platformDetector");
 const cacheService = require("../services/cacheService");
 const videoDownloader = require("../services/videoDownloader");
@@ -58,7 +59,81 @@ exports.downloadInstagram = async (req, res) => {
       });
     }
 
-    // ── Download via gallery-dl ──
+    // ══════════════════════════════════════════════════
+    // LAYER 1: Meta oEmbed API (official, free, no cookies)
+    // ══════════════════════════════════════════════════
+    console.log(`🔄 [Instagram] Layer 1: Trying oEmbed API...`);
+    const oembedData = await instagramOembed.getInstagramData(cleanUrl);
+
+    if (oembedData.success && oembedData.mediaUrl) {
+      console.log(`✅ [Instagram] oEmbed succeeded — serving direct CDN URL`);
+
+      const responseData = {
+        type:        "video",
+        id:          crypto.randomBytes(6).toString("hex"),
+        title:       oembedData.title,
+        thumbnail:   oembedData.thumbnail,
+        platform:    "Instagram",
+        quality:     "original",
+        format:      "mp4",
+        downloadUrl: oembedData.mediaUrl,
+        cached:      false,
+        method:      "oembed",
+        note:        "✅ Video ready for download",
+      };
+
+      try { await cacheService.set?.(cacheKey, responseData, 10 * 60); } catch (e) {}
+
+      return res.status(200).json({
+        status: "success",
+        cached: false,
+        data:   responseData,
+      });
+    }
+
+    console.log(`⚠️  [Instagram] Layer 1 failed — trying Layer 2: yt-dlp...`);
+
+    // ══════════════════════════════════════════════════
+    // LAYER 2: yt-dlp with cookies (existing system)
+    // ══════════════════════════════════════════════════
+    let ytdlpResult = null;
+    try {
+      ytdlpResult = await videoDownloader.getVideoInfo(cleanUrl);
+    } catch (e) {
+      console.log(`⚠️  [Instagram] yt-dlp metadata failed: ${e.message}`);
+    }
+
+    if (ytdlpResult && ytdlpResult.url) {
+      console.log(`✅ [Instagram] yt-dlp succeeded`);
+
+      const responseData = {
+        type:        "video",
+        id:          crypto.randomBytes(6).toString("hex"),
+        title:       ytdlpResult.title || "Instagram Video",
+        thumbnail:   ytdlpResult.thumbnail || null,
+        platform:    "Instagram",
+        quality:     "original",
+        format:      "mp4",
+        downloadUrl: ytdlpResult.url,
+        cached:      false,
+        method:      "ytdlp",
+        note:        "✅ Video ready for download",
+      };
+
+      try { await cacheService.set?.(cacheKey, responseData, 10 * 60); } catch (e) {}
+
+      return res.status(200).json({
+        status: "success",
+        cached: false,
+        data:   responseData,
+      });
+    }
+
+    console.log(`⚠️  [Instagram] Layer 2 failed — trying Layer 3: gallery-dl...`);
+
+    // ══════════════════════════════════════════════════
+    // LAYER 3: gallery-dl (existing system)
+    // ══════════════════════════════════════════════════
     const imageResult = await instagramImageService.downloadImages(cleanUrl, {
       r2Client: videoDownloader.r2Client,
       r2Working: videoDownloader.r2Working,
