@@ -11,11 +11,11 @@ router.post('/razorpay', async (req, res) => {
   try {
     // ✅ Step 1: Verify signature (fraud prevention)
     const signature = req.headers['x-razorpay-signature'];
-    const body = req.body;
+    const rawBody = req.body instanceof Buffer ? req.body.toString('utf8') : JSON.stringify(req.body);
 
     const expectedSignature = crypto
       .createHmac('sha256', RAZORPAY_WEBHOOK_SECRET)
-      .update(body)
+      .update(rawBody)
       .digest('hex');
 
     if (signature !== expectedSignature) {
@@ -24,7 +24,7 @@ router.post('/razorpay', async (req, res) => {
     }
 
     // ✅ Step 2: Parse the event
-    const event = JSON.parse(body);
+    const event = JSON.parse(rawBody);
     console.log(`📦 Razorpay webhook: ${event.event}`);
 
     // ✅ Step 3: Handle payment captured / subscription activated
