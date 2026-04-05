@@ -314,7 +314,8 @@ bot.onText(/\/status/, async (msg) => {
   try {
     const user      = await getUser(msg);
     const isPremium = user.plan === "premium";
-    const remaining = isPremium ? "∞" : Math.max(0, FREE_LIMIT - user.downloadsThisMonth);
+    const effectiveLimit = FREE_LIMIT + (user.bonusDownloads || 0);
+    const remaining = isPremium ? "∞" : Math.max(0, effectiveLimit - user.downloadsThisMonth);
     const days      = daysUntilReset(user.monthResetDate);
 
     await bot.sendMessage(
@@ -601,7 +602,8 @@ bot.on("message", async (msg) => {
       }
 
       // Hard limit check — show upgrade wall
-      if (user.plan === "free" && user.downloadsThisMonth >= FREE_LIMIT) {
+      const effectiveLimit = FREE_LIMIT + (user.bonusDownloads || 0);
+      if (user.plan === "free" && user.downloadsThisMonth >= effectiveLimit) {
         const days        = daysUntilReset(user.monthResetDate);
         const paymentLink = await createPaymentLink(user);
         await bot.sendMessage(
@@ -641,7 +643,8 @@ bot.on("message", async (msg) => {
       try { await bot.deleteMessage(chatId, loadingMsg.message_id); } catch {}
 
       const isPremium = user.plan === "premium";
-      const remaining = FREE_LIMIT - user.downloadsThisMonth;
+      const effectiveLimitDisplay = FREE_LIMIT + (user.bonusDownloads || 0);
+      const remaining = effectiveLimitDisplay - user.downloadsThisMonth;
 
       const caption =
         `🎬 *${esc(title)}*\n\n` +
@@ -834,7 +837,8 @@ async function handleDownload(chatId, user, url, params) {
   activeUsers.set(userId, true);
 
   // Race condition safety — re-check limit
-  if (user.plan === "free" && user.downloadsThisMonth >= FREE_LIMIT) {
+  const effectiveLimit = FREE_LIMIT + (user.bonusDownloads || 0);
+  if (user.plan === "free" && user.downloadsThisMonth >= effectiveLimit) {
     activeUsers.delete(userId);
     const days        = daysUntilReset(user.monthResetDate);
     const paymentLink = await createPaymentLink(user);
@@ -892,7 +896,7 @@ async function handleDownload(chatId, user, url, params) {
           platform: esc(data.platform || "Video"),
           url:      safeUrl,
           used:     user.downloadsThisMonth,
-          limit:    FREE_LIMIT,
+          limit:    FREE_LIMIT + (user.bonusDownloads || 0),
           isPremium,
         }) + nudge,
         { parse_mode: "MarkdownV2" }
@@ -918,6 +922,134 @@ async function handleDownload(chatId, user, url, params) {
     activeUsers.delete(userId);
   }
 }
+
+// ═══════════════════════════════════════════════════════════
+//  /redeem — coupon code redemption
+//  Usage: /redeem VIDVAULT10K
+// ═══════════════════════════════════════════════════════════
+const COUPONS = {
+  VIDVAULT10K: {
+    bonus: 10,
+    description: "10K Downloads Celebration — 10 bonus downloads",
+  },
+};
+
+bot.onText(/\/redeem(?:\s+(.+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  try {
+    const user = await getUser(msg);
+    const code = match[1]?.trim().toUpperCase();
+
+    if (!code) {
+      await bot.sendMessage(
+        chatId,
+        `🎟 *Redeem a Coupon Code*\n\n` +
+        `Usage: \`/redeem CODE\`\n\n` +
+        `Example: \`/redeem VIDVAULT10K\``,
+        { parse_mode: "MarkdownV2" }
+      );
+      return;
+    }
+
+    const coupon = COUPONS[code];
+    if (!coupon) {
+      await bot.sendMessage(
+        chatId,
+        `❌ *Invalid coupon code*\n\nCode \`${esc(code)}\` not found\\.\nCheck spelling and try again\\.`,
+        { parse_mode: "MarkdownV2" }
+      );
+      return;
+    }
+
+    // Check if already used
+    if ((user.usedCoupons || []).includes(code)) {
+      await bot.sendMessage(
+        chatId,
+        `⚠️ *Already redeemed*\n\nYou've already used coupon \`${esc(code)}\`\\.\nEach code can only be used once per account\\.`,
+        { parse_mode: "MarkdownV2" }
+      );
+      return;
+    }
+
+    // Apply bonus
+    user.bonusDownloads = (user.bonusDownloads || 0) + coupon.bonus;
+    if (!user.usedCoupons) user.usedCoupons = [];
+    user.usedCoupons.push(code);
+    await user.save();
+
+    const newLimit = FREE_LIMIT + user.bonusDownloads;
+    await bot.sendMessage(
+      chatId,
+      `🎉 *Coupon redeemed\\!*\n\n` +
+      `✅ Code: \`${esc(code)}\`\n` +
+      `🎁 Bonus: *\\+${coupon.bonus} downloads* added\\!\n\n` +
+      `📊 Your new monthly limit: *${newLimit} downloads*\n\n` +
+      `Thank you for being part of VidVault\\! 🙏`,
+      { parse_mode: "MarkdownV2" }
+    );
+  } catch (err) {
+    console.error("Redeem error:", err.message);
+    await bot.sendMessage(chatId, `❌ Something went wrong\\. Please try again\\.`, { parse_mode: "MarkdownV2" });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  /broadcast10k — admin-only mass celebration message
+//  Only works for TELEGRAM_ADMIN_ID
+// ═══════════════════════════════════════════════════════════
+bot.onText(/\/broadcast10k/, async (msg) => {
+  const chatId  = msg.chat.id;
+  const senderId = msg.from.id.toString();
+  const adminId  = process.env.TELEGRAM_ADMIN_ID;
+
+  if (senderId !== adminId) {
+    await bot.sendMessage(chatId, `❌ Admin only command\\.`, { parse_mode: "MarkdownV2" });
+    return;
+  }
+
+  await bot.sendMessage(chatId, `📤 Starting broadcast to all users\\. This will take a few minutes\\.`, { parse_mode: "MarkdownV2" });
+
+  const celebrationMessage =
+    `🎉 *VidVault just hit 10,000 Downloads\\!*\n\n` +
+    `Thank you for being part of this journey\\! 🙏\n\n` +
+    `To celebrate, we're giving *every user 10 bonus downloads* FREE\\!\n\n` +
+    `👉 Use coupon code: \`VIDVAULT10K\`\n` +
+    `Just type: \`/redeem VIDVAULT10K\`\n\n` +
+    `🎁 *\\+10 free downloads added instantly\\!*\n\n` +
+    `Share VidVault with friends:\n` +
+    `🌐 vidvaults\\.com\n` +
+    `📱 @VidVaultFreeBot`;
+
+  try {
+    // Fetch all users in batches to avoid memory issues
+    const { default: TelegramUser } = await Promise.resolve().then(() => require("../models/TelegramUser"));
+    const totalUsers = await TelegramUser.countDocuments({});
+    let sent = 0, failed = 0, batchSize = 30;
+
+    for (let skip = 0; skip < totalUsers; skip += batchSize) {
+      const users = await TelegramUser.find({}).skip(skip).limit(batchSize).lean();
+      for (const u of users) {
+        try {
+          await bot.sendMessage(u.telegramId, celebrationMessage, { parse_mode: "MarkdownV2" });
+          sent++;
+          // Telegram rate limit: 30 messages/sec max — add small delay
+          await new Promise(r => setTimeout(r, 50));
+        } catch {
+          failed++;
+        }
+      }
+    }
+
+    await bot.sendMessage(
+      chatId,
+      `✅ *Broadcast complete\\!*\n\n📤 Sent: *${sent}*\n❌ Failed: *${failed}*\n👥 Total: *${totalUsers}*`,
+      { parse_mode: "MarkdownV2" }
+    );
+  } catch (err) {
+    console.error("Broadcast error:", err.message);
+    await bot.sendMessage(chatId, `❌ Broadcast failed: ${esc(err.message)}`, { parse_mode: "MarkdownV2" });
+  }
+});
 
 // ═══════════════════════════════════════════════════════════
 //  GROUP CHAT

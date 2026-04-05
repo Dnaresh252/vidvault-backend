@@ -57,6 +57,16 @@ const telegramUserSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  // Bonus downloads from coupons/referrals
+  bonusDownloads: {
+    type: Number,
+    default: 0,
+  },
+  // Track which coupons user has already redeemed (one use per user)
+  usedCoupons: {
+    type: [String],
+    default: [],
+  },
 });
 
 // Auto reset monthly downloads
