@@ -1022,7 +1022,7 @@ bot.onText(/\/broadcast10k/, async (msg) => {
 
   try {
     // Fetch all users in batches to avoid memory issues
-    const { default: TelegramUser } = await Promise.resolve().then(() => require("../models/TelegramUser"));
+    // TelegramUser is already imported at the top of this file
     const totalUsers = await TelegramUser.countDocuments({});
     let sent = 0, failed = 0, batchSize = 30;
 
