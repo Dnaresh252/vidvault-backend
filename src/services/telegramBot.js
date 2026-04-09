@@ -318,22 +318,26 @@ bot.onText(/\/status/, async (msg) => {
     const remaining = isPremium ? "∞" : Math.max(0, effectiveLimit - user.downloadsThisMonth);
     const days      = daysUntilReset(user.monthResetDate);
 
-    await bot.sendMessage(
-      chatId,
-      `📊 *Your VidVault Account*\n\n` +
-      `👤 Plan: *${isPremium ? "⭐ Premium" : "🆓 Free"}*\n` +
-      `📥 Used this month: *${user.downloadsThisMonth}*\n` +
-      `✅ Remaining: *${remaining}*\n` +
-      `🔄 Resets in: *${days} days*\n` +
-      `📈 Total downloads: *${user.totalDownloads}*\n\n` +
-      `🎁 Referral code: *${esc(user.referralCode)}*\n` +
-      `👥 Friends referred: *${user.referralCount}/10*\n\n` +
-      `${isPremium
-        ? `✨ You're on Premium — enjoy unlimited downloads\\!`
-        : `💡 Upgrade for ₹29/month — type /premium`
-      }`,
-      { parse_mode: "MarkdownV2" }
-    );
+    const statusMsg = isPremium
+      ? `⭐ *Premium Member*\n\n` +
+        `✅ Unlimited downloads — active\n` +
+        `✅ 4K \\+ 1080p quality — unlocked\n` +
+        `✅ MP3 320k — unlocked\n` +
+        `✅ Valid until: *${user.premiumEndDate ? new Date(user.premiumEndDate).toDateString().replace(/ /g, " ") : "Active"}*\n\n` +
+        `📈 Total downloads: *${user.totalDownloads}*\n` +
+        `🎁 Referral: *${esc(user.referralCode)}* \\| 👥 *${user.referralCount}/10* friends\n\n` +
+        `_You're a VIP\\. Keep downloading\\! 🎬_`
+      : `🆓 *Free Plan*\n\n` +
+        `📥 Used: *${user.downloadsThisMonth}/${effectiveLimit}* this month\n` +
+        `✅ Remaining: *${remaining}* downloads\n` +
+        `🔄 Resets in: *${days} days*\n` +
+        `📈 Total downloads: *${user.totalDownloads}*\n\n` +
+        `🎁 Referral: *${esc(user.referralCode)}* \\| 👥 *${user.referralCount}/10* friends\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `⚡ *Go unlimited for ~~₹99~~ ₹29/month*\n` +
+        `/premium`;
+
+    await bot.sendMessage(chatId, statusMsg, { parse_mode: "MarkdownV2" });
   } catch (err) {
     console.error("Status error:", err);
   }
@@ -367,21 +371,28 @@ bot.onText(/\/premium/, async (msg) => {
     await bot.sendMessage(
       chatId,
       `⭐ *VidVault Premium*\n\n` +
-      `_Join 1,000\\+ users who never worry about limits_\n\n` +
-      `✅ *Unlimited* downloads/month\n` +
-      `✅ *1080p \\+ 4K* quality\n` +
-      `✅ *2x faster* processing\n` +
-      `✅ *Priority* queue\n` +
-      `✅ *All* 25\\+ platforms\n` +
-      `✅ *Auto\\-renews* — cancel anytime\n\n` +
+      `_Join 500\\+ members who never count downloads_\n\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `💰 *Only ₹29/month*\n` +
-      `That's just *₹1/day* — less than one chai ☕\n\n` +
+      `✅ *Unlimited* downloads — no monthly cap\n` +
+      `✅ *4K Ultra \\+ 1080p* quality\n` +
+      `✅ *MP3 320k* audio extraction\n` +
+      `✅ *All 25\\+* platforms\n` +
+      `✅ Activates *instantly* after payment\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `💰 ~~₹99~~ *₹29/month*\n` +
+      `_Less than one chai a day ☕_\n\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👇 *Pay instantly — activates in seconds:*\n` +
+      `👇 *Pay now — active in seconds:*\n` +
       `${escUrl(paymentLink)}\n\n` +
-      `_Secure payment via Razorpay • UPI • PhonePe • GPay_`,
-      { parse_mode: "MarkdownV2" }
+      `_UPI • PhonePe • GPay • Cards via Razorpay_`,
+      {
+        parse_mode: "MarkdownV2",
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "⭐ Go Premium — ₹29/month", url: paymentLink },
+          ]]
+        }
+      }
     );
   } catch (err) {
     console.error("Premium error:", err);
@@ -931,6 +942,7 @@ const COUPONS = {
   VIDVAULT10K: {
     bonus: 10,
     description: "10K Downloads Celebration — 10 bonus downloads",
+    expiresAt: new Date("2026-04-13T23:59:59Z").getTime(), // expires April 13
   },
 };
 
@@ -956,6 +968,16 @@ bot.onText(/\/redeem(?:\s+(.+))?/, async (msg, match) => {
       await bot.sendMessage(
         chatId,
         `❌ *Invalid coupon code*\n\nCode \`${esc(code)}\` not found\\.\nCheck spelling and try again\\.`,
+        { parse_mode: "MarkdownV2" }
+      );
+      return;
+    }
+
+    // Check expiry
+    if (coupon.expiresAt && Date.now() > coupon.expiresAt) {
+      await bot.sendMessage(
+        chatId,
+        `⏰ *Coupon expired*\n\nCode \`${esc(code)}\` was a limited\\-time offer and has now expired\\.\n\nStay tuned for future promotions\\! 🎁`,
         { parse_mode: "MarkdownV2" }
       );
       return;

@@ -57,15 +57,18 @@ const T = {
     languageSet: `✅ Language set to *English*\\! Let's go 🎬`,
 
     welcome: ({ name, isReturning, limit }) =>
-      `🎬 *Welcome${isReturning ? " back" : ""} to VidVault, ${name}\\!*\n\n` +
-      `Download videos from *25\\+ platforms* instantly\\!\n\n` +
-      `📱 YouTube • Instagram • TikTok\n` +
-      `🐦 Twitter • Facebook • Reddit \\& more\n\n` +
+      `🎬 *${isReturning ? `Welcome back, ${name}\\!` : `Hey ${name}, welcome to VidVault\\!`}*\n\n` +
+      `${isReturning
+        ? `Good to see you again 👋\nYou've joined *10,000\\+* downloads served\\.\n\n`
+        : `You just joined *10,000\\+* people who download smarter\\.\n\n`
+      }` +
+      `Paste any video link → I'll download it in seconds\\.\n` +
+      `YouTube • Instagram • TikTok • Twitter \\& 25\\+ more\n\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `🆓 *Free:* ${limit} downloads/month • 720p\n` +
-      `⭐ *Premium ₹29/month:* Unlimited • 4K\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👇 *Just paste any video link to start\\!*`,
+      `🆓 *Free* — ${limit} downloads/month\n` +
+      `⭐ *Premium* — Unlimited \\+ 4K \\+ MP3 320k\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `👇 *Send me a video link to start\\!*`,
 
     pasteLink:
       `❓ *Send me a video link to download\\!*\n\n` +
@@ -78,28 +81,32 @@ const T = {
       `⏳ *Downloading ${label}\\.\\.\\.*\n\nUsually takes 10\\-20 seconds\\!`,
 
     limitReached: ({ total, days, link }) =>
-      `💪 *You've downloaded ${total} videos — you're a power user\\!*\n\n` +
-      `Free plan resets in *${days} days*\\.\n\n` +
+      `🚫 *You've hit your limit for this month\\.*\n\n` +
+      `You've downloaded *${total} videos* total\\.\n` +
+      `You clearly know how to use VidVault 💪\n\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `OR unlock unlimited right now:\n\n` +
-      `⭐ *Premium — ₹29/month*\n` +
-      `• Unlimited downloads forever\n` +
-      `• 1080p \\+ 4K quality\n` +
-      `• Activates in seconds\n\n` +
-      `👇 ${link}`,
+      `Your choice right now:\n\n` +
+      `⏳ *Wait ${days} days* for free reset\n` +
+      `_\\(miss every video you want this week\\)_\n\n` +
+      `OR\n\n` +
+      `⚡ *Go Unlimited RIGHT NOW*\n` +
+      `Download anything tonight, this weekend, forever\\.\n\n` +
+      `~~₹99~~ → *₹29/month* 🔥\n` +
+      `_Less than one chai per day ☕_\n\n` +
+      `👇 *Pay now — activates in seconds:*\n` +
+      `${link}`,
 
     upgradeNudge3:
       `\n━━━━━━━━━━━━━━━━━━━━\n` +
-      `⚡ *You've used 3 of 5 free downloads*\n` +
-      `Premium users never count downloads 😎\n` +
-      `*₹29/month → Unlimited forever*\n` +
-      `/premium to upgrade`,
+      `📊 *3 of 5 downloads used this month*\n` +
+      `Power users download 40\\+ videos/month with Premium\\.\n` +
+      `2 left → /premium`,
 
     upgradeNudge4: ({ link }) =>
       `\n━━━━━━━━━━━━━━━━━━━━\n` +
-      `🔥 *Last free download used this month\\!*\n` +
-      `You clearly love VidVault 🎬\n` +
-      `Join Premium for just *₹1/day*\n` +
+      `⚠️ *1 free download left this month\\!*\n` +
+      `After this — wait for reset OR upgrade\\.\n` +
+      `Most people upgrade right here 😏\n` +
       `👉 ${link}`,
 
     rateLimited: ({ sec }) =>
@@ -112,21 +119,18 @@ const T = {
       `⏰ Session expired\\. Please send the video link again\\.`,
 
     downloadReady: ({ title, label, size, platform, url, used, limit, isPremium }) =>
-      `✅ *Download Ready\\!*\n\n` +
+      `✅ *Done\\! Your download is ready\\.*\n\n` +
       `🎬 ${title}\n` +
-      `📊 Quality: *${label}*\n` +
-      `📦 Size: ${size}\n` +
-      `⚡ Platform: ${platform}\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📊 ${label}  •  📦 ${size}  •  ⚡ ${platform}\n\n` +
       `🔗 *Tap to download:*\n` +
       `${url}\n\n` +
-      `⏰ Available for *1 hour*\n\n` +
+      `⏰ Link expires in *1 hour*\n\n` +
       `${isPremium
-        ? `⭐ *Premium* — Enjoy unlimited downloads\\!`
-        : `📊 Downloads used: *${used}/${limit}*`
+        ? `⭐ *Premium member* — No limits, ever\\. Enjoy\\! 🎬`
+        : `📊 *${used}/${limit}* downloads used this month`
       }`,
 
-    lockedQuality: `🔒 Premium quality — upgrade for ₹29/month!`,
+    lockedQuality: `🔒 *Premium quality*\n\nUpgrade to unlock 1080p, 4K \\& MP3 320k\\.\n/premium`,
   },
 
   // ─────────────────────────────────────────────────────────
@@ -139,15 +143,18 @@ const T = {
     languageSet: `✅ भाषा *हिंदी* सेट हो गई\\! चलो शुरू करते हैं 🎬`,
 
     welcome: ({ name, isReturning, limit }) =>
-      `🎬 *${isReturning ? "वापस आए" : "स्वागत है"} VidVault पर, ${name}\\!*\n\n` +
-      `*25\\+ platforms* से seconds में videos download करें\\!\n\n` +
-      `📱 YouTube • Instagram • TikTok\n` +
-      `🐦 Twitter • Facebook \\& और भी\n\n` +
+      `🎬 *${isReturning ? `वापस आए, ${name}\\!` : `हे ${name}, VidVault पर स्वागत है\\!`}*\n\n` +
+      `${isReturning
+        ? `फिर से देखकर अच्छा लगा 👋\n*10,000\\+* downloads serve हो चुके हैं\\.\n\n`
+        : `तुम *10,000\\+* smart downloaders में शामिल हो गए\\.\n\n`
+      }` +
+      `कोई भी video link paste करो → seconds में download\\.\n` +
+      `YouTube • Instagram • TikTok • Twitter \\& 25\\+ more\n\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `🆓 *Free:* ${limit} downloads/month • 720p\n` +
-      `⭐ *Premium ₹29/month:* Unlimited • 4K\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👇 *कोई भी video link paste करें और शुरू करें\\!*`,
+      `🆓 *Free* — ${limit} downloads/month\n` +
+      `⭐ *Premium ₹29/month* — Unlimited \\+ 4K \\+ MP3\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `👇 *कोई भी video link भेजो और शुरू करो\\!*`,
 
     pasteLink:
       `❓ *कोई video link भेजो download के लिए\\!*\n\n` +
@@ -160,28 +167,32 @@ const T = {
       `⏳ *${label} download हो रहा है\\.\\.\\.*\n\n10\\-20 seconds लगेंगे\\!`,
 
     limitReached: ({ total, days, link }) =>
-      `💪 *तुमने ${total} videos download किए हैं — तुम तो pro हो\\!*\n\n` +
-      `Free plan *${days} दिनों* में reset होगा\\.\n\n` +
+      `🚫 *इस महीने की limit खत्म हो गई\\.*\n\n` +
+      `तुमने अब तक *${total} videos* download किए हैं\\.\n` +
+      `तुम सच में VidVault के pro user हो 💪\n\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `या अभी Unlimited unlock करो:\n\n` +
-      `⭐ *Premium — सिर्फ ₹29/month*\n` +
-      `• Unlimited downloads हमेशा\n` +
-      `• 1080p \\+ 4K quality\n` +
-      `• Seconds में activate\n\n` +
-      `👇 ${link}`,
+      `अभी दो रास्ते हैं:\n\n` +
+      `⏳ *${days} दिन wait करो* free reset के लिए\n` +
+      `_\\(इस हफ्ते जो videos चाहिए वो miss हो जाएंगी\\)_\n\n` +
+      `या\n\n` +
+      `⚡ *अभी Unlimited हो जाओ*\n` +
+      `आज रात, इस weekend, हमेशा के लिए download करो\\.\n\n` +
+      `~~₹99~~ → *₹29/month* 🔥\n` +
+      `_एक chai से भी सस्ता ☕_\n\n` +
+      `👇 *Pay करो — seconds में activate:*\n` +
+      `${link}`,
 
     upgradeNudge3:
       `\n━━━━━━━━━━━━━━━━━━━━\n` +
-      `⚡ *5 में से 3 free downloads इस्तेमाल हो गए*\n` +
-      `Premium users कभी नहीं गिनते 😎\n` +
-      `*₹29/month → Unlimited हमेशा के लिए*\n` +
-      `/premium से upgrade करो`,
+      `📊 *5 में से 3 downloads इस्तेमाल हो गए*\n` +
+      `Premium users महीने में 40\\+ videos download करते हैं\\.\n` +
+      `2 बचे हैं → /premium`,
 
     upgradeNudge4: ({ link }) =>
       `\n━━━━━━━━━━━━━━━━━━━━\n` +
-      `🔥 *इस महीने का आखिरी free download\\!*\n` +
-      `लगता है VidVault बहुत पसंद है तुम्हें 🎬\n` +
-      `सिर्फ *₹1/दिन* में Premium — एक chai से भी सस्ता ☕\n` +
+      `⚠️ *इस महीने सिर्फ 1 download बचा है\\!*\n` +
+      `इसके बाद reset का wait या upgrade\\.\n` +
+      `ज़्यादातर लोग यहीं upgrade करते हैं 😏\n` +
       `👉 ${link}`,
 
     rateLimited: ({ sec }) =>
