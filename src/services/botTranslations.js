@@ -91,7 +91,7 @@ const T = {
       `OR\n\n` +
       `⚡ *Go Unlimited RIGHT NOW*\n` +
       `Download anything tonight, this weekend, forever\\.\n\n` +
-      `~~₹99~~ → *₹29/month* 🔥\n` +
+      `~₹99~ → *₹29/month* 🔥\n` +
       `_Less than one chai per day ☕_\n\n` +
       `👇 *Pay now — activates in seconds:*\n` +
       `${link}`,
@@ -177,7 +177,7 @@ const T = {
       `या\n\n` +
       `⚡ *अभी Unlimited हो जाओ*\n` +
       `आज रात, इस weekend, हमेशा के लिए download करो\\.\n\n` +
-      `~~₹99~~ → *₹29/month* 🔥\n` +
+      `~₹99~ → *₹29/month* 🔥\n` +
       `_एक chai से भी सस्ता ☕_\n\n` +
       `👇 *Pay करो — seconds में activate:*\n` +
       `${link}`,

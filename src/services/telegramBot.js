@@ -334,7 +334,7 @@ bot.onText(/\/status/, async (msg) => {
         `📈 Total downloads: *${user.totalDownloads}*\n\n` +
         `🎁 Referral: *${esc(user.referralCode)}* \\| 👥 *${user.referralCount}/10* friends\n\n` +
         `━━━━━━━━━━━━━━━━━━━━\n` +
-        `⚡ *Go unlimited for ~~₹99~~ ₹29/month*\n` +
+        `⚡ *Go unlimited for ~₹99~ ₹29/month*\n` +
         `/premium`;
 
     await bot.sendMessage(chatId, statusMsg, { parse_mode: "MarkdownV2" });
@@ -342,6 +342,24 @@ bot.onText(/\/status/, async (msg) => {
     console.error("Status error:", err);
   }
 });
+
+// ═══════════════════════════════════════════════════════════
+//  Stars invoice helper
+// ═══════════════════════════════════════════════════════════
+// 1 Star ≈ $0.013 USD. We charge 75 Stars ≈ $1 (fair global price).
+const STARS_PRICE = 75; // Telegram Stars for 1 month Premium
+
+async function sendStarsInvoice(chatId, user) {
+  await bot.sendInvoice(
+    chatId,
+    "VidVault Premium — 1 Month",
+    "✅ Unlimited downloads  ✅ 4K + 1080p  ✅ MP3 320k  ✅ All 25+ platforms\n\nActivates instantly after payment.",
+    `stars_premium_${user.telegramId}`, // payload — we read this in successful_payment
+    "",          // provider_token — MUST be empty string for Stars
+    "XTR",       // currency — XTR = Telegram Stars
+    [{ label: "VidVault Premium (1 Month)", amount: STARS_PRICE }]
+  );
+}
 
 // ═══════════════════════════════════════════════════════════
 //  /premium
@@ -370,27 +388,22 @@ bot.onText(/\/premium/, async (msg) => {
 
     await bot.sendMessage(
       chatId,
-      `⭐ *VidVault Premium*\n\n` +
-      `_Join 500\\+ members who never count downloads_\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `✅ *Unlimited* downloads — no monthly cap\n` +
-      `✅ *4K Ultra \\+ 1080p* quality\n` +
-      `✅ *MP3 320k* audio extraction\n` +
-      `✅ *All 25\\+* platforms\n` +
-      `✅ Activates *instantly* after payment\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `💰 ~~₹99~~ *₹29/month*\n` +
-      `_Less than one chai a day ☕_\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👇 *Pay now — active in seconds:*\n` +
-      `${escUrl(paymentLink)}\n\n` +
-      `_UPI • PhonePe • GPay • Cards via Razorpay_`,
+      `⭐ *VidVault Premium*\n` +
+      `_Unlimited downloads\\. Zero limits\\. Forever\\._\n\n` +
+      `✅ Unlimited downloads every month\n` +
+      `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
+      `✅ All 25\\+ platforms supported\n` +
+      `✅ Activates instantly after payment\n\n` +
+      `💰 ~₹99~ *₹29/month* — less than one chai ☕\n\n` +
+      `Choose your payment method 👇`,
       {
         parse_mode: "MarkdownV2",
+        disable_web_page_preview: true,
         reply_markup: {
-          inline_keyboard: [[
-            { text: "⭐ Go Premium — ₹29/month", url: paymentLink },
-          ]]
+          inline_keyboard: [
+            [{ text: "🇮🇳 Pay ₹29 — UPI / GPay / Cards", url: paymentLink }],
+            [{ text: "⭐ Pay with Telegram Stars (International)", callback_data: "stars_pay" }],
+          ]
         }
       }
     );
@@ -763,23 +776,29 @@ bot.on("callback_query", async (query) => {
 
     // ── Locked premium button tapped ─────────────────────
     if (data === "locked") {
-      // Answer with popup alert FIRST (only one answerCallbackQuery allowed)
       await bot.answerCallbackQuery(query.id, {
-        text: "🔒 Premium quality — upgrade for ₹29/month!",
+        text: "🔒 Premium quality — upgrade to unlock!",
         show_alert: true,
       });
       const paymentLink = await createPaymentLink(user);
       await bot.sendMessage(
         chatId,
-        `🔒 *This quality requires Premium*\n\n` +
-        `You just tapped a premium quality\\!\n` +
-        `That means you already know what you want 😎\n\n` +
-        `*Unlock for ₹1/day:*\n` +
-        `⭐ 1080p \\+ 4K \\+ MP3 320k\n` +
-        `⭐ Unlimited downloads\n` +
-        `⭐ Priority speed\n\n` +
-        `👇 ${escUrl(paymentLink)}`,
-        { parse_mode: "MarkdownV2" }
+        `🔒 *Premium quality*\n\n` +
+        `You tapped 1080p or 4K — good taste 😎\n\n` +
+        `✅ Unlock with Premium:\n` +
+        `🎬 1080p \\+ 4K \\+ MP3 320k\n` +
+        `🚀 Unlimited downloads\n\n` +
+        `~₹99~ *₹29/month* — tap below 👇`,
+        {
+          parse_mode: "MarkdownV2",
+          disable_web_page_preview: true,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🇮🇳 Pay ₹29 — UPI / GPay / Cards", url: paymentLink }],
+              [{ text: "⭐ Pay with Telegram Stars", callback_data: "stars_pay" }],
+            ]
+          }
+        }
       );
       return;
     }
@@ -790,15 +809,31 @@ bot.on("callback_query", async (query) => {
       const paymentLink = await createPaymentLink(user);
       await bot.sendMessage(
         chatId,
-        `⭐ *VidVault Premium — ₹29/month*\n\n` +
+        `⭐ *VidVault Premium*\n\n` +
         `✅ Unlimited downloads\n` +
         `✅ 1080p \\+ 4K quality\n` +
-        `✅ Activates in seconds\n` +
-        `✅ Cancel anytime\n\n` +
-        `👇 ${escUrl(paymentLink)}\n\n` +
+        `✅ Activates in seconds\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `🇮🇳 *India:* ~₹99~ *₹29/month*\n` +
+        `🌍 *International:* ⭐ *75 Stars*\n\n` +
         `_Less than one chai per day ☕_`,
-        { parse_mode: "MarkdownV2" }
+        {
+          parse_mode: "MarkdownV2",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🇮🇳 Pay ₹29 — UPI/Cards", url: paymentLink }],
+              [{ text: "⭐ Pay with Telegram Stars", callback_data: "stars_pay" }],
+            ]
+          }
+        }
       );
+      return;
+    }
+
+    // ── Telegram Stars payment ────────────────────────────
+    if (data === "stars_pay") {
+      await bot.answerCallbackQuery(query.id);
+      await sendStarsInvoice(chatId, user);
       return;
     }
 
@@ -1070,6 +1105,83 @@ bot.onText(/\/broadcast10k/, async (msg) => {
   } catch (err) {
     console.error("Broadcast error:", err.message);
     await bot.sendMessage(chatId, `❌ Broadcast failed: ${esc(err.message)}`, { parse_mode: "MarkdownV2" });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  TELEGRAM STARS — pre_checkout_query
+//  Telegram calls this before charging — we MUST answer within 10s
+// ═══════════════════════════════════════════════════════════
+bot.on("pre_checkout_query", async (query) => {
+  try {
+    // Always approve — Telegram requires this within 10 seconds
+    await bot.answerPreCheckoutQuery(query.id, true);
+  } catch (err) {
+    console.error("pre_checkout_query error:", err.message);
+    // If we fail to answer, Telegram will cancel the payment automatically
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  TELEGRAM STARS — successful_payment
+//  Fires after Stars are actually charged — activate premium here
+// ═══════════════════════════════════════════════════════════
+bot.on("message", async (msg) => {
+  if (!msg.successful_payment) return;
+
+  const chatId  = msg.chat.id;
+  const userId  = msg.from.id.toString();
+  const payment = msg.successful_payment;
+
+  try {
+    // Only handle Stars payments (XTR currency)
+    if (payment.currency !== "XTR") return;
+
+    const user = await TelegramUser.findOne({ telegramId: userId });
+    if (!user) return;
+
+    // Activate or EXTEND premium by 30 days
+    const now = Date.now();
+    const currentExpiry = user.premiumEndDate ? new Date(user.premiumEndDate).getTime() : now;
+    const base = currentExpiry > now ? currentExpiry : now; // extend if already active
+    user.plan             = "premium";
+    user.premiumStartDate = user.premiumStartDate || new Date();
+    user.premiumEndDate   = new Date(base + 30 * 24 * 60 * 60 * 1000);
+    await user.save();
+
+    console.log(`⭐ Stars payment: ${userId} paid ${payment.total_amount} Stars — premium activated`);
+
+    // Notify admin
+    const adminId = process.env.TELEGRAM_ADMIN_ID;
+    if (adminId) {
+      await bot.sendMessage(
+        adminId,
+        `⭐ *Stars Payment Received\\!*\n\n` +
+        `👤 User: ${esc(user.firstName || user.username || userId)} \\(@${esc(user.username || "unknown")}\\)\n` +
+        `🆔 ID: \`${userId}\`\n` +
+        `⭐ Stars: *${payment.total_amount}*\n` +
+        `📅 Expires: ${new Date(user.premiumEndDate).toDateString()}`,
+        { parse_mode: "MarkdownV2" }
+      ).catch(() => {});
+    }
+
+    // Confirm to user
+    await bot.sendMessage(
+      chatId,
+      `🎉 *Payment Successful\\!*\n\n` +
+      `⭐ Thank you for *${payment.total_amount} Stars\\!*\n\n` +
+      `✅ *VidVault Premium is now ACTIVE*\n\n` +
+      `You now have:\n` +
+      `🚀 *Unlimited* downloads\n` +
+      `🎬 *4K Ultra \\+ 1080p* quality\n` +
+      `🎵 *MP3 320k* audio\n` +
+      `✅ Valid for *30 days*\n\n` +
+      `Just send any video link to start\\! 🎬\n\n` +
+      `_Type /status to see your premium account_`,
+      { parse_mode: "MarkdownV2" }
+    );
+  } catch (err) {
+    console.error("successful_payment error:", err.message);
   }
 });
 
