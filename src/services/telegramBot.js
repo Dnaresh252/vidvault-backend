@@ -4,12 +4,38 @@ const TelegramUser = require("../models/TelegramUser");
 const { t, getLanguageKeyboard, detectLang } = require("./botTranslations");
 
 // ─── Constants ────────────────────────────────────────────
-const TOKEN         = process.env.TELEGRAM_BOT_TOKEN;
-const PAYMENT_LINK  = process.env.RAZORPAY_PAYMENT_LINK;
-const API_URL       = process.env.API_URL || "https://api.vidvaults.com";
+const TOKEN                = process.env.TELEGRAM_BOT_TOKEN;
+const PAYMENT_LINK         = process.env.RAZORPAY_PAYMENT_LINK;
+const ANNUAL_PAYMENT_LINK  = process.env.RAZORPAY_ANNUAL_PAYMENT_LINK || process.env.RAZORPAY_PAYMENT_LINK;
+const API_URL              = process.env.API_URL || "https://api.vidvaults.com";
 const BOT_USERNAME  = "VidVaultFreeBot";
-const FREE_LIMIT    = 5;
+const FREE_LIMIT    = 3; // Reduced from 5 → more upgrade pressure
+const STARS_PRICE   = 150; // Raised from 75 → $2/month (was $1)
 const RATE_LIMIT_SECONDS = 10;
+
+// Indian languages — show Razorpay first; all others → Stars first
+const INDIAN_LANGS = new Set(["hi", "ta", "te", "bn", "ur", "kn", "ml"]);
+function isIndianUser(user) {
+  return INDIAN_LANGS.has(user.language || "");
+}
+
+// Smart payment keyboard — right payment first based on user location
+function getPaymentKeyboard(paymentLink, isIndian) {
+  if (isIndian) {
+    return {
+      inline_keyboard: [
+        [{ text: "🇮🇳 Pay ₹29 — UPI / GPay / Cards", url: paymentLink }],
+        [{ text: "⭐ Pay with Telegram Stars", callback_data: "stars_pay" }],
+      ]
+    };
+  }
+  return {
+    inline_keyboard: [
+      [{ text: "⭐ Upgrade — 150 Stars ($2/month)", callback_data: "stars_pay" }],
+      [{ text: "🇮🇳 Pay ₹29 (India only)", url: paymentLink }],
+    ]
+  };
+}
 
 // ─── In-memory state ──────────────────────────────────────
 const activeUsers     = new Map(); // userId → true (currently downloading)
@@ -23,6 +49,253 @@ setInterval(() => {
     if (val.timestamp < cutoff) pendingDownloads.delete(key);
   }
 }, 60 * 1000);
+
+// ─── Renewal reminder — runs every 6 hours ────────────────
+// Sends messages to users whose premium expired 0, 3, or 7 days ago
+setInterval(async () => {
+  try {
+    const now = new Date();
+    const windows = [
+      { daysAgo: 0, label: "day0"  },
+      { daysAgo: 3, label: "day3"  },
+      { daysAgo: 7, label: "day7"  },
+    ];
+    for (const { daysAgo } of windows) {
+      const from = new Date(now - (daysAgo * 24 + 6) * 60 * 60 * 1000);
+      const to   = new Date(now - daysAgo * 24 * 60 * 60 * 1000);
+      const expired = await TelegramUser.find({
+        plan: "free",
+        premiumEndDate: { $gte: from, $lt: to },
+      }).lean();
+
+      for (const u of expired) {
+        try {
+          const indian = INDIAN_LANGS.has(u.language || "");
+          const paymentLink = PAYMENT_LINK;
+          const msg = daysAgo === 0
+            ? (indian
+                ? `😔 *Your Premium just expired\\.*\n\nYou're back to *3 downloads/month*\\.\nRenew for ~₹99~ *₹29* and stay unlimited\\.\n\n/premium`
+                : `😔 *Your Premium just expired\\.*\n\nBack to *3 downloads/month*\\.\nRenew with *150 Stars* — one tap, instant\\.\n\n/premium`)
+            : daysAgo === 3
+            ? (indian
+                ? `⚠️ *3 days without Premium\\.*\n\nHow many videos have you missed this week\\?\n\nRenew for ₹29 → unlimited forever\n/premium`
+                : `⚠️ *3 days without Premium\\.*\n\nHow many videos have you missed\\?\n\nRenew with *150 Stars* → unlimited forever\n/premium`)
+            : (indian
+                ? `🔥 *Last reminder — renew for ₹29*\n\nDon't lose access forever\\. Hundreds of users renewed this week\\.\n/premium`
+                : `🔥 *Last reminder — 150 Stars*\n\nDon't lose unlimited access\\. Hundreds renewed this week\\.\n/premium`);
+
+          await bot.sendMessage(u.telegramId, msg, { parse_mode: "MarkdownV2" });
+          await new Promise(r => setTimeout(r, 100));
+        } catch {}
+      }
+    }
+  } catch (err) {
+    console.error("Renewal reminder error:", err.message);
+  }
+}, 6 * 60 * 60 * 1000);
+
+// ─── Broadcast engine ─────────────────────────────────────
+// In-memory guard: prevents duplicate fires within the same 30-min window.
+// On bot restart, the DB field `lastBroadcastDate` acts as the real dedup guard
+// so restarting mid-day never double-sends to users who already got it.
+const broadcastSent = { friday: "", monthEnd: "", winBack: "" };
+
+// Core batch sender — 20 msgs/sec, marks blocked users, reports to admin
+async function sendBroadcast(query, messageBuilder, label) {
+  const adminId = process.env.TELEGRAM_ADMIN_ID;
+  const today   = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  let sent = 0, blockedCount = 0, errors = 0;
+
+  // Count once upfront so offset doesn't drift as we update docs
+  const total = await TelegramUser.countDocuments(query);
+
+  for (let offset = 0; offset < total; offset += 30) {
+    const batch = await TelegramUser.find(query).skip(offset).limit(30).lean();
+    for (const u of batch) {
+      try {
+        const { text, opts } = messageBuilder(u);
+        await bot.sendMessage(u.telegramId, text, opts);
+        // Mark sent — atomically, don't re-read whole doc
+        await TelegramUser.updateOne(
+          { telegramId: u.telegramId },
+          { lastBroadcastDate: new Date() }
+        );
+        sent++;
+      } catch (err) {
+        const code = err.response?.body?.error_code;
+        if (code === 403) {
+          // User blocked the bot — silence them permanently from broadcasts
+          await TelegramUser.updateOne({ telegramId: u.telegramId }, { blocked: true });
+          blockedCount++;
+        } else {
+          errors++;
+        }
+      }
+      // Telegram limit: 30 msgs/sec. We use 50ms = 20/sec (safe headroom)
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+
+  if (adminId) {
+    bot.sendMessage(
+      adminId,
+      `📤 *Broadcast: ${esc(label)}*\n\n` +
+      `• Total targets: *${total}*\n` +
+      `• Sent: *${sent}*\n` +
+      `• Blocked \\(cleaned\\): *${blockedCount}*\n` +
+      `• Errors: *${errors}*`,
+      { parse_mode: "MarkdownV2" }
+    ).catch(() => {});
+  }
+  console.log(`📤 Broadcast "${label}": sent=${sent} blocked=${blockedCount} errors=${errors}`);
+}
+
+// Base query shared by all broadcasts:
+// skip premium users, blocked users, and users already messaged today
+function baseBroadcastQuery(extra = {}) {
+  const todayUTC = new Date();
+  todayUTC.setUTCHours(0, 0, 0, 0);
+  return {
+    plan: "free",
+    blocked: { $ne: true },
+    lastBroadcastDate: { $not: { $gte: todayUTC } }, // null/undefined also passes
+    ...extra,
+  };
+}
+
+// ── Friday 6PM IST weekend deal ──────────────────────────
+async function runFridayBroadcast() {
+  console.log("📤 Friday broadcast starting...");
+  await sendBroadcast(
+    baseBroadcastQuery(),
+    (u) => {
+      const indian = INDIAN_LANGS.has(u.language || "");
+      return {
+        text: indian
+          ? `🎉 *Weekend Special\\!*\n\n` +
+            `This weekend — download unlimited on VidVault\\!\n\n` +
+            `✅ Unlimited downloads\n` +
+            `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
+            `✅ YouTube, Instagram, TikTok \\+ 25 more\n\n` +
+            `~₹99~ *₹29/month* — less than one chai ☕\n\n` +
+            `👉 /premium`
+          : `🎉 *Weekend Special\\!*\n\n` +
+            `This weekend — download anything, unlimited\\!\n\n` +
+            `✅ Unlimited downloads\n` +
+            `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
+            `✅ Works in *50\\+ countries*\n\n` +
+            `⭐ *150 Stars/month* — one tap, instant\\!\n\n` +
+            `👉 /premium`,
+        opts: { parse_mode: "MarkdownV2" },
+      };
+    },
+    "Friday Weekend Deal"
+  );
+}
+
+// ── 28th of month — urgency push ─────────────────────────
+async function runMonthEndBroadcast() {
+  console.log("📤 Month-end broadcast starting...");
+  // Only target users who've actually used at least 1 download (engaged)
+  await sendBroadcast(
+    baseBroadcastQuery({ downloadsThisMonth: { $gte: 1 } }),
+    (u) => {
+      const indian     = INDIAN_LANGS.has(u.language || "");
+      const used       = u.downloadsThisMonth || 0;
+      const limit      = FREE_LIMIT + (u.bonusDownloads || 0);
+      const remaining  = Math.max(0, limit - used);
+      const usedLine   = remaining === 0
+        ? (indian ? `You've hit your limit — upgrade to keep downloading this week\\!`
+                  : `You've hit your limit — go unlimited right now\\!`)
+        : (indian ? `You have *${remaining} download${remaining !== 1 ? "s" : ""}* left — don't waste them\\!`
+                  : `*${remaining} download${remaining !== 1 ? "s" : ""}* left — make them count\\!`);
+
+      return {
+        text: indian
+          ? `⚠️ *3 days left in this month\\!*\n\n` +
+            `You've used *${used}/${limit}* free downloads\\.\n` +
+            `${usedLine}\n\n` +
+            `✅ Unlimited for ~₹99~ *₹29* — resets every month\n\n` +
+            `👉 /premium`
+          : `⚠️ *3 days left in this month\\!*\n\n` +
+            `You've used *${used}/${limit}* free downloads\\.\n` +
+            `${usedLine}\n\n` +
+            `⭐ *150 Stars* → unlimited from right now\n\n` +
+            `👉 /premium`,
+        opts: { parse_mode: "MarkdownV2" },
+      };
+    },
+    "Month-End Urgency"
+  );
+}
+
+// ── 7-day inactive win-back ──────────────────────────────
+async function runWinBackBroadcast() {
+  console.log("📤 Win-back broadcast starting...");
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  await sendBroadcast(
+    baseBroadcastQuery({
+      lastActive: { $lt: sevenDaysAgo },
+      totalDownloads: { $gte: 1 }, // only users who've used the bot at least once
+    }),
+    (u) => {
+      const indian     = INDIAN_LANGS.has(u.language || "");
+      const streak     = u.currentStreak || 0;
+      const streakNote = streak >= 2
+        ? (indian
+            ? `\n🔥 *Your ${streak}\\-day streak is still alive\\!* Don't break it\\.\n`
+            : `\n🔥 *Your ${streak}\\-day streak is waiting\\!* Come back and keep it\\.\n`)
+        : "";
+
+      return {
+        text: indian
+          ? `👋 *Hey, we miss you\\!*\n\n` +
+            `You haven't downloaded in a while\\.\n` +
+            `VidVault supports YouTube, Instagram, TikTok \\+ 25 more 🎬\n` +
+            streakNote +
+            `\nJust paste any video link — done in seconds 👇\n\n` +
+            `/start`
+          : `👋 *Hey, we miss you\\!*\n\n` +
+            `You haven't downloaded in a while\\.\n` +
+            `Millions of videos across 25\\+ platforms 🎬\n` +
+            streakNote +
+            `\nPaste any video link — download in seconds 👇\n\n` +
+            `/start`,
+        opts: { parse_mode: "MarkdownV2" },
+      };
+    },
+    "7-Day Win-Back"
+  );
+}
+
+// ── Scheduler — checks every 30 minutes ─────────────────
+// Time windows (UTC):
+//   Friday broadcast  → Fri 12:00 UTC (= 6:00 PM IST / 8:00 AM EST)
+//   Month-end         → 28th of month, 07:00 UTC (= 12:30 PM IST)
+//   Win-back          → Daily at 08:00 UTC (= 1:30 PM IST)
+setInterval(async () => {
+  const now      = new Date();
+  const utcDay   = now.getUTCDay();
+  const utcHour  = now.getUTCHours();
+  const utcDate  = now.getUTCDate();
+  const todayStr = now.toISOString().slice(0, 10);
+
+  if (utcDay === 5 && utcHour === 12 && broadcastSent.friday !== todayStr) {
+    broadcastSent.friday = todayStr;
+    runFridayBroadcast().catch(e => console.error("Friday broadcast error:", e.message));
+  }
+
+  if (utcDate === 28 && utcHour === 7 && broadcastSent.monthEnd !== todayStr) {
+    broadcastSent.monthEnd = todayStr;
+    runMonthEndBroadcast().catch(e => console.error("Month-end broadcast error:", e.message));
+  }
+
+  if (utcHour === 8 && broadcastSent.winBack !== todayStr) {
+    broadcastSent.winBack = todayStr;
+    runWinBackBroadcast().catch(e => console.error("Win-back broadcast error:", e.message));
+  }
+}, 30 * 60 * 1000);
 
 // ─── Initialize bot ───────────────────────────────────────
 const bot = new TelegramBot(TOKEN, { polling: true });
@@ -97,34 +370,62 @@ async function getUser(msg) {
   return user;
 }
 
-// Create dynamic Razorpay payment link per user (telegram_id in notes)
-// Falls back to static link if API keys not configured
-async function createPaymentLink(user) {
+// Create dynamic Razorpay payment link per user
+// extraNotes: { is_gift: "true", gift_from_id: "..." } for gift flows
+async function createRazorpayLink(user, plan = "monthly", extraNotes = {}) {
   const keyId     = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
-  if (!keyId || !keySecret || keyId === "your_razorpay_key_id") return PAYMENT_LINK;
+  const isAnnual  = plan === "annual";
+  if (!keyId || !keySecret || keyId === "your_razorpay_key_id") {
+    return isAnnual ? ANNUAL_PAYMENT_LINK : PAYMENT_LINK;
+  }
   try {
     const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
     const res  = await axios.post(
       "https://api.razorpay.com/v1/payment_links",
       {
-        amount: 2900,
+        amount: isAnnual ? 24900 : 2900,
         currency: "INR",
-        description: "VidVault Premium — 1 Month Unlimited Downloads",
+        description: isAnnual
+          ? "VidVault Premium — 1 Year Unlimited Downloads (Save ₹99)"
+          : "VidVault Premium — 1 Month Unlimited Downloads",
         notes: {
           telegram_id: user.telegramId,
-          username: user.username || user.firstName || "user",
+          username:    user.username || user.firstName || "user",
+          plan_type:   plan,
+          ...extraNotes,
         },
         reminder_enable: false,
-        expire_by: Math.floor(Date.now() / 1000) + 3600, // link expires in 1hr
+        expire_by: Math.floor(Date.now() / 1000) + 3600,
       },
       { headers: { Authorization: `Basic ${auth}` }, timeout: 5000 }
     );
     return res.data.short_url;
   } catch (err) {
     console.error("Razorpay link creation failed:", err.message);
-    return PAYMENT_LINK;
+    return isAnnual ? ANNUAL_PAYMENT_LINK : PAYMENT_LINK;
   }
+}
+
+// Aliases for clarity
+async function createPaymentLink(user)       { return createRazorpayLink(user, "monthly"); }
+async function createAnnualPaymentLink(user) { return createRazorpayLink(user, "annual");  }
+
+// Stars invoice — monthly or annual
+async function sendStarsInvoiceForPlan(chatId, user, plan = "monthly") {
+  const isAnnual = plan === "annual";
+  await bot.sendInvoice(
+    chatId,
+    isAnnual ? "VidVault Premium — 1 Year" : "VidVault Premium — 1 Month",
+    isAnnual
+      ? "✅ Unlimited downloads for 12 months  ✅ 4K + 1080p  ✅ MP3 320k  ✅ Save 800 Stars vs monthly"
+      : "✅ Unlimited downloads  ✅ 4K + 1080p  ✅ MP3 320k  ✅ All 25+ platforms",
+    `stars_${plan}_${user.telegramId}`,
+    "",
+    "XTR",
+    [{ label: isAnnual ? "VidVault Premium (1 Year)" : "VidVault Premium (1 Month)",
+       amount: isAnnual ? 1000 : STARS_PRICE }]
+  );
 }
 
 // Fetch instant metadata (title, thumbnail, duration, platform)
@@ -140,78 +441,321 @@ async function fetchMetadata(url) {
   }
 }
 
-// Inline keyboard — free users see locked premium buttons (FOMO)
-function getQualityKeyboard(isPremium) {
+// Inline keyboard
+// hasTaste = user hasn't used their free 4K taste yet
+function getQualityKeyboard(isPremium, hasTaste = false) {
   if (isPremium) {
     return {
       inline_keyboard: [
         [
-          { text: "📱 480p",       callback_data: "q_480p"    },
-          { text: "🎬 720p HD",    callback_data: "q_720p"    },
+          { text: "📱 480p",        callback_data: "q_480p"    },
+          { text: "🎬 720p HD",     callback_data: "q_720p"    },
         ],
         [
-          { text: "✨ 1080p FHD",  callback_data: "q_1080p"   },
-          { text: "👑 4K Ultra",   callback_data: "q_4k"      },
+          { text: "✨ 1080p FHD",   callback_data: "q_1080p"   },
+          { text: "👑 4K Ultra",    callback_data: "q_4k"      },
         ],
         [
-          { text: "🎵 MP3 128k",   callback_data: "q_mp3_128" },
-          { text: "🎵 MP3 320k HQ",callback_data: "q_mp3_320" },
+          { text: "🎵 MP3 128k",    callback_data: "q_mp3_128" },
+          { text: "🎵 MP3 320k HQ", callback_data: "q_mp3_320" },
         ],
       ],
     };
   }
-  return {
-    inline_keyboard: [
-      [
-        { text: "📱 480p — Free",       callback_data: "q_480p"    },
-        { text: "🎬 720p — Free",       callback_data: "q_720p"    },
-      ],
-      [
-        { text: "🔒 1080p — Premium",   callback_data: "locked"    },
-        { text: "🔒 4K — Premium",      callback_data: "locked"    },
-      ],
-      [
-        { text: "🎵 MP3 128k — Free",   callback_data: "q_mp3_128" },
-        { text: "🔒 MP3 320k — Premium",callback_data: "locked"    },
-      ],
+
+  const baseRows = [
+    [
+      { text: "📱 480p — Free",        callback_data: "q_480p"    },
+      { text: "🎬 720p — Free",        callback_data: "q_720p"    },
     ],
-  };
+    [
+      { text: "🔒 1080p — Premium",    callback_data: "locked"    },
+      { text: "🔒 4K — Premium",       callback_data: "locked"    },
+    ],
+    [
+      { text: "🎵 MP3 128k — Free",    callback_data: "q_mp3_128" },
+      { text: "🔒 MP3 320k — Premium", callback_data: "locked"    },
+    ],
+  ];
+
+  if (hasTaste) {
+    return {
+      inline_keyboard: [
+        [{ text: "🎁 Try 4K FREE — Once Only!", callback_data: "q_4k_taste" }],
+        ...baseRows,
+      ],
+    };
+  }
+  return { inline_keyboard: baseRows };
 }
 
-// Map callback_data to API quality params
+// Map callback_data → API params
+// isTaste=true tells handleDownload to mark the taste as used after success
 function qualityToParams(data) {
   const map = {
-    q_480p:    { quality: "low",     format: "mp4", label: "480p"      },
-    q_720p:    { quality: "medium",  format: "mp4", label: "720p HD"   },
-    q_1080p:   { quality: "high",    format: "mp4", label: "1080p FHD" },
-    q_4k:      { quality: "highest", format: "mp4", label: "4K Ultra"  },
-    q_mp3_128: { quality: "medium",  format: "mp3", label: "MP3 128k"  },
-    q_mp3_320: { quality: "high",    format: "mp3", label: "MP3 320k"  },
+    q_480p:     { quality: "low",     format: "mp4", label: "480p"      },
+    q_720p:     { quality: "medium",  format: "mp4", label: "720p HD"   },
+    q_1080p:    { quality: "high",    format: "mp4", label: "1080p FHD" },
+    q_4k:       { quality: "highest", format: "mp4", label: "4K Ultra"  },
+    q_4k_taste: { quality: "highest", format: "mp4", label: "4K Ultra",  isTaste: true },
+    q_mp3_128:  { quality: "medium",  format: "mp3", label: "MP3 128k"  },
+    q_mp3_320:  { quality: "high",    format: "mp3", label: "MP3 320k"  },
   };
   return map[data] || null;
 }
 
-// Psychology nudge after download — only when needed, payment link pre-generated
-function getUpgradeNudge(downloadsUsed, paymentLink) {
-  if (downloadsUsed === 3) {
-    return (
-      `\n━━━━━━━━━━━━━━━━━━━━\n` +
-      `⚡ *You've used 3 of 5 free downloads*\n` +
-      `Premium users never count downloads 😎\n` +
-      `*₹29/month → Unlimited forever*\n` +
-      `/premium to upgrade`
-    );
+// Post-taste nudge — shown once after the free 4K taste download
+function getTasteNudge(user) {
+  const indian = isIndianUser(user);
+  return `\n━━━━━━━━━━━━━━━━━━━━\n` +
+    `👑 *That was 4K Ultra\\!*\n` +
+    `_That's what Premium feels like — every single download\\._\n\n` +
+    (indian
+      ? `Get unlimited 4K forever:\n~₹99~ *₹29/month* → /premium`
+      : `Get unlimited 4K forever:\n⭐ *150 Stars/month* → /premium`);
+}
+
+// Psychology nudge after download — language + streak aware
+function getUpgradeNudge(downloadsUsed, user) {
+  const indian         = isIndianUser(user);
+  const effectiveLimit = FREE_LIMIT + (user.bonusDownloads || 0);
+  const remaining      = effectiveLimit - downloadsUsed;
+  const streak         = user.currentStreak || 0;
+  const streakWarning  = streak >= 2 ? `🔥 Streak: *${streak} days* — upgrade to protect it\\!\n` : "";
+
+  if (remaining === 1) {
+    return indian
+      ? `\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `⚠️ *1 free download left this month\\!*\n` +
+        `${streakWarning}` +
+        `~₹99~ *₹29/month* → /premium`
+      : `\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `⚠️ *1 free download left this month\\!*\n` +
+        `${streakWarning}` +
+        `⭐ *150 Stars/month* → /premium`;
   }
-  if (downloadsUsed === 4) {
-    return (
-      `\n━━━━━━━━━━━━━━━━━━━━\n` +
-      `🔥 *Last free download used this month\\!*\n` +
-      `You clearly love VidVault 🎬\n` +
-      `Join Premium for just *₹1/day*\n` +
-      `👉 ${escUrl(paymentLink)}`
-    );
+  if (remaining === 0) {
+    return indian
+      ? `\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `🔥 *That was your last free download\\!*\n` +
+        `${streakWarning}` +
+        `~₹99~ *₹29/month* → /premium`
+      : `\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `🔥 *That was your last free download\\!*\n` +
+        `${streakWarning}` +
+        `⭐ *150 Stars/month* → /premium`;
   }
   return "";
+}
+
+// ─── Streak helpers ───────────────────────────────────────
+
+// Returns fire emoji tier based on streak length
+function streakEmoji(streak) {
+  if (streak >= 100) return "👑";
+  if (streak >= 30)  return "🏆";
+  if (streak >= 7)   return "🔥";
+  if (streak >= 3)   return "⚡";
+  return "✨";
+}
+
+// Next streak milestone above current streak
+const STREAK_MILESTONES = [3, 7, 30, 100];
+function nextMilestone(streak) {
+  return STREAK_MILESTONES.find(m => m > streak) || null;
+}
+
+// Update streak in-memory (does NOT save — caller must save user)
+// Returns { incremented: bool, milestone: string|null }
+// Uses UTC midnight so users worldwide get fair streak windows
+function updateStreak(user) {
+  const todayUTC = new Date();
+  todayUTC.setUTCHours(0, 0, 0, 0);
+
+  const lastDate = user.lastStreakDate ? new Date(user.lastStreakDate) : null;
+  if (lastDate) lastDate.setUTCHours(0, 0, 0, 0);
+
+  // Already counted today — idempotent, no double-increment
+  if (lastDate && lastDate.getTime() === todayUTC.getTime()) {
+    return { incremented: false, milestone: null };
+  }
+
+  const yesterdayUTC = new Date(todayUTC);
+  yesterdayUTC.setUTCDate(yesterdayUTC.getUTCDate() - 1);
+
+  if (!lastDate || lastDate.getTime() < yesterdayUTC.getTime()) {
+    // First download ever, or missed at least one day → reset streak
+    user.currentStreak = 1;
+  } else {
+    // Consecutive day → extend streak
+    user.currentStreak = (user.currentStreak || 0) + 1;
+  }
+
+  user.lastStreakDate = todayUTC;
+
+  if (user.currentStreak > (user.longestStreak || 0)) {
+    user.longestStreak = user.currentStreak;
+  }
+
+  // Check if this streak count is a milestone that hasn't been claimed yet
+  const milestoneMap = { 3: "streak_3", 7: "streak_7", 30: "streak_30", 100: "streak_100" };
+  const key = milestoneMap[user.currentStreak];
+  if (key && !(user.streakMilestones || []).includes(key)) {
+    if (!user.streakMilestones) user.streakMilestones = [];
+    user.streakMilestones.push(key);
+    return { incremented: true, milestone: key };
+  }
+
+  return { incremented: true, milestone: null };
+}
+
+// Apply milestone reward — sends message and modifies user (caller saves)
+async function applyStreakMilestone(chatId, user, milestoneKey) {
+  const adminId = process.env.TELEGRAM_ADMIN_ID;
+
+  if (milestoneKey === "streak_3") {
+    user.bonusDownloads = (user.bonusDownloads || 0) + 1;
+    await bot.sendMessage(
+      chatId,
+      `⚡ *3\\-Day Streak Unlocked\\!* 🎉\n\n` +
+      `You've downloaded 3 days in a row\\!\n\n` +
+      `🎁 *\\+1 bonus download* added to your account\\!\n\n` +
+      `Keep going — at *7 days* you get \\+3 more\\! 🔥`,
+      { parse_mode: "MarkdownV2" }
+    );
+
+  } else if (milestoneKey === "streak_7") {
+    user.bonusDownloads = (user.bonusDownloads || 0) + 3;
+    await bot.sendMessage(
+      chatId,
+      `🔥 *7\\-Day Streak\\!* You're on fire\\!\n\n` +
+      `A full week of daily downloads — incredible\\!\n\n` +
+      `🎁 *\\+3 bonus downloads* added\\!\n\n` +
+      `Next milestone: *30 days* → FREE 1\\-Month Premium 🏆\n` +
+      `_Only ${30 - 7} more days\\. You've got this\\!_`,
+      { parse_mode: "MarkdownV2" }
+    );
+
+  } else if (milestoneKey === "streak_30") {
+    // Award 30 days free premium — extend from current expiry (never reset)
+    const now          = Date.now();
+    const currentExpiry = user.premiumEndDate ? new Date(user.premiumEndDate).getTime() : now;
+    const base          = currentExpiry > now ? currentExpiry : now;
+    user.plan             = "premium";
+    user.premiumStartDate = user.premiumStartDate || new Date();
+    user.premiumEndDate   = new Date(base + 30 * 24 * 60 * 60 * 1000);
+
+    await bot.sendMessage(
+      chatId,
+      `🏆 *30\\-DAY LEGEND\\!*\n\n` +
+      `You've used VidVault every single day for 30 days\\!\n` +
+      `That's dedication — and we're rewarding it\\! 🙌\n\n` +
+      `🎉 *1 MONTH PREMIUM — ABSOLUTELY FREE\\!*\n\n` +
+      `✅ Unlimited downloads — NOW\n` +
+      `✅ 4K Ultra \\+ 1080p \\+ MP3 320k — NOW\n` +
+      `✅ Valid for 30 days\n\n` +
+      `_You earned this\\. Next stop: *100 days → 3 Months FREE* 👑_`,
+      { parse_mode: "MarkdownV2" }
+    );
+
+    // Notify admin — free premium was awarded
+    if (adminId) {
+      bot.sendMessage(
+        adminId,
+        `🏆 *30\\-Day Streak Reward Given\\!*\n\n` +
+        `User: ${esc(user.firstName || user.username || user.telegramId)}\n` +
+        `ID: \`${user.telegramId}\`\n` +
+        `Streak: *30 days*\n` +
+        `Reward: *30 days Premium FREE*\n` +
+        `Expires: ${new Date(user.premiumEndDate).toDateString()}`,
+        { parse_mode: "MarkdownV2" }
+      ).catch(() => {});
+    }
+
+  } else if (milestoneKey === "streak_100") {
+    // Give 3 months (90 days) free Premium — extend from current expiry (never reset)
+    const now           = Date.now();
+    const currentExpiry = user.premiumEndDate ? new Date(user.premiumEndDate).getTime() : now;
+    const base          = currentExpiry > now ? currentExpiry : now;
+    user.plan             = "premium";
+    user.premiumStartDate = user.premiumStartDate || new Date();
+    user.premiumEndDate   = new Date(base + 90 * 24 * 60 * 60 * 1000);
+
+    await bot.sendMessage(
+      chatId,
+      `👑 *100\\-DAY LEGEND\\!*\n\n` +
+      `You are in the top 0\\.1% of VidVault users ever\\!\n` +
+      `100 consecutive days — ABSOLUTELY LEGENDARY\\! 🏆\n\n` +
+      `🎉 *3 MONTHS PREMIUM — ABSOLUTELY FREE\\!*\n\n` +
+      `✅ Unlimited downloads — NOW\n` +
+      `✅ 4K Ultra \\+ 1080p \\+ MP3 320k — NOW\n` +
+      `✅ Valid for *90 days*\n\n` +
+      `_You are a VidVault Legend\\. Forever\\. 👑_`,
+      { parse_mode: "MarkdownV2" }
+    );
+
+    if (adminId) {
+      bot.sendMessage(
+        adminId,
+        `👑 *100\\-Day Streak Legend\\!*\n\n` +
+        `User: ${esc(user.firstName || user.username || user.telegramId)}\n` +
+        `ID: \`${user.telegramId}\`\n` +
+        `Streak: *100 days*\n` +
+        `Reward: *90 days Premium FREE*\n` +
+        `Expires: ${new Date(user.premiumEndDate).toDateString()}`,
+        { parse_mode: "MarkdownV2" }
+      ).catch(() => {});
+    }
+  }
+}
+
+// Build the streak line appended to download confirmation
+function getStreakLine(user, incremented) {
+  const streak = user.currentStreak || 0;
+  if (!incremented || streak < 2) return "";
+
+  const emoji = streakEmoji(streak);
+  const next  = nextMilestone(streak);
+  const daysTo = next ? next - streak : null;
+
+  let line = `\n━━━━━━━━━━━━━━━━━━━━\n${emoji} *${streak}\\-Day Streak\\!*`;
+
+  if (daysTo) {
+    if (next === 30) {
+      line += ` — _${daysTo} more → FREE 1\\-Month Premium 🏆_`;
+    } else if (next === 100) {
+      line += ` — _${daysTo} more → 3 months FREE Premium 👑_`;
+    } else {
+      line += ` — _${daysTo} more → bonus downloads\\!_`;
+    }
+  } else {
+    line += ` — _LEGENDARY status\\! 👑_`;
+  }
+
+  return line;
+}
+
+// Build streak FOMO line for limit wall and nudge
+function getStreakFomoLine(user) {
+  const streak = user.currentStreak || 0;
+  if (streak < 2) return "";
+
+  const next   = nextMilestone(streak);
+  const daysTo = next ? next - streak : 0;
+
+  if (next === 30 && daysTo <= 10) {
+    return `\n🔥 *Your ${streak}\\-day streak is at risk\\!*\n` +
+           `_Just ${daysTo} more days → FREE 1\\-Month Premium\\!_\n`;
+  }
+  if (next === 30) {
+    return `\n🔥 *Don't break your ${streak}\\-day streak\\!*\n` +
+           `_${daysTo} days to FREE Premium — you're ${streak} days in\\!_\n`;
+  }
+  if (next === 100 && daysTo <= 10) {
+    return `\n👑 *${streak}\\-day streak at risk\\!*\n` +
+           `_${daysTo} more days → 3 months FREE Premium\\!_\n`;
+  }
+  return `\n🔥 *Your ${streak}\\-day streak is at risk\\!*\n`;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -318,23 +862,50 @@ bot.onText(/\/status/, async (msg) => {
     const remaining = isPremium ? "∞" : Math.max(0, effectiveLimit - user.downloadsThisMonth);
     const days      = daysUntilReset(user.monthResetDate);
 
+    const indian    = isIndianUser(user);
+    const upgradePrompt = indian
+      ? `⚡ *Go unlimited for ~₹99~ ₹29/month*`
+      : `⚡ *Go unlimited for ⭐ 150 Stars/month*`;
+
+    // Streak section
+    const streak      = user.currentStreak || 0;
+    const longestStreak = user.longestStreak || 0;
+    const sEmoji      = streakEmoji(streak);
+    const sNext       = nextMilestone(streak);
+    const sDaysTo     = sNext ? sNext - streak : null;
+    const streakSection = streak >= 1
+      ? `\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `${sEmoji} *Download Streak: ${streak} days*\n` +
+        `🏅 Best: *${longestStreak} days*\n` +
+        `${sDaysTo
+          ? (sNext === 30
+              ? `🎯 *${sDaysTo} more days → FREE 1\\-Month Premium\\!*`
+              : sNext === 100
+              ? `🎯 *${sDaysTo} more days → 3 months FREE Premium 👑*`
+              : `🎯 *${sDaysTo} more days → bonus downloads\\!*`)
+          : `👑 *LEGENDARY — Max streak reached\\!*`
+        }\n`
+      : "";
+
     const statusMsg = isPremium
       ? `⭐ *Premium Member*\n\n` +
         `✅ Unlimited downloads — active\n` +
         `✅ 4K \\+ 1080p quality — unlocked\n` +
         `✅ MP3 320k — unlocked\n` +
-        `✅ Valid until: *${user.premiumEndDate ? new Date(user.premiumEndDate).toDateString().replace(/ /g, " ") : "Active"}*\n\n` +
+        `✅ Valid until: *${user.premiumEndDate ? new Date(user.premiumEndDate).toDateString() : "Active"}*\n\n` +
         `📈 Total downloads: *${user.totalDownloads}*\n` +
-        `🎁 Referral: *${esc(user.referralCode)}* \\| 👥 *${user.referralCount}/10* friends\n\n` +
-        `_You're a VIP\\. Keep downloading\\! 🎬_`
+        `🎁 Referral: *${esc(user.referralCode)}* \\| 👥 *${user.referralCount}/10* friends` +
+        streakSection +
+        `\n_You're a VIP\\. Keep downloading\\! 🎬_`
       : `🆓 *Free Plan*\n\n` +
         `📥 Used: *${user.downloadsThisMonth}/${effectiveLimit}* this month\n` +
         `✅ Remaining: *${remaining}* downloads\n` +
         `🔄 Resets in: *${days} days*\n` +
         `📈 Total downloads: *${user.totalDownloads}*\n\n` +
-        `🎁 Referral: *${esc(user.referralCode)}* \\| 👥 *${user.referralCount}/10* friends\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `⚡ *Go unlimited for ~₹99~ ₹29/month*\n` +
+        `🎁 Referral: *${esc(user.referralCode)}* \\| 👥 *${user.referralCount}/10* friends` +
+        streakSection +
+        `\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `${upgradePrompt}\n` +
         `/premium`;
 
     await bot.sendMessage(chatId, statusMsg, { parse_mode: "MarkdownV2" });
@@ -342,24 +913,6 @@ bot.onText(/\/status/, async (msg) => {
     console.error("Status error:", err);
   }
 });
-
-// ═══════════════════════════════════════════════════════════
-//  Stars invoice helper
-// ═══════════════════════════════════════════════════════════
-// 1 Star ≈ $0.013 USD. We charge 75 Stars ≈ $1 (fair global price).
-const STARS_PRICE = 75; // Telegram Stars for 1 month Premium
-
-async function sendStarsInvoice(chatId, user) {
-  await bot.sendInvoice(
-    chatId,
-    "VidVault Premium — 1 Month",
-    "✅ Unlimited downloads  ✅ 4K + 1080p  ✅ MP3 320k  ✅ All 25+ platforms\n\nActivates instantly after payment.",
-    `stars_premium_${user.telegramId}`, // payload — we read this in successful_payment
-    "",          // provider_token — MUST be empty string for Stars
-    "XTR",       // currency — XTR = Telegram Stars
-    [{ label: "VidVault Premium (1 Month)", amount: STARS_PRICE }]
-  );
-}
 
 // ═══════════════════════════════════════════════════════════
 //  /premium
@@ -384,31 +937,243 @@ bot.onText(/\/premium/, async (msg) => {
       return;
     }
 
-    const paymentLink = await createPaymentLink(user);
+    const paymentLink       = await createPaymentLink(user);
+    const annualPaymentLink = await createAnnualPaymentLink(user);
+    const indian            = isIndianUser(user);
 
-    await bot.sendMessage(
-      chatId,
-      `⭐ *VidVault Premium*\n` +
-      `_Unlimited downloads\\. Zero limits\\. Forever\\._\n\n` +
-      `✅ Unlimited downloads every month\n` +
-      `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
-      `✅ All 25\\+ platforms supported\n` +
-      `✅ Activates instantly after payment\n\n` +
-      `💰 ~₹99~ *₹29/month* — less than one chai ☕\n\n` +
-      `Choose your payment method 👇`,
-      {
-        parse_mode: "MarkdownV2",
-        disable_web_page_preview: true,
-        reply_markup: {
+    const premiumMsg = indian
+      ? `⭐ *VidVault Premium*\n` +
+        `_Unlimited downloads\\. Zero limits\\. Forever\\._\n\n` +
+        `✅ Unlimited downloads\n` +
+        `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
+        `✅ All 25\\+ platforms\n` +
+        `✅ Activates instantly\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `📅 *Monthly:* ~₹99~ *₹29/month*\n` +
+        `🏆 *Annual:* *₹249/year* — _save ₹99_ 🔥\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `Choose your plan 👇`
+      : `⭐ *VidVault Premium*\n` +
+        `_Unlimited downloads\\. Zero limits\\. Worldwide\\._\n\n` +
+        `✅ Unlimited downloads\n` +
+        `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
+        `✅ All 25\\+ platforms\n` +
+        `✅ Trusted in *50\\+ countries*\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `📅 *Monthly:* ⭐ *150 Stars* \\(≈ \\$2\\)\n` +
+        `🏆 *Annual:* ⭐ *1000 Stars* — _save 800 Stars_ 🔥\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `_One tap payment — no card needed_ 👇`;
+
+    const keyboard = indian
+      ? {
           inline_keyboard: [
-            [{ text: "🇮🇳 Pay ₹29 — UPI / GPay / Cards", url: paymentLink }],
-            [{ text: "⭐ Pay with Telegram Stars (International)", callback_data: "stars_pay" }],
+            [{ text: "📅 Monthly — ₹29/month", url: paymentLink }],
+            [{ text: "🏆 Annual — ₹249/year (Best Value)", url: annualPaymentLink }],
+            [{ text: "⭐ Pay with Telegram Stars", callback_data: "stars_plan_menu" }],
           ]
         }
-      }
-    );
+      : {
+          inline_keyboard: [
+            [{ text: "📅 Monthly — 150 Stars", callback_data: "stars_monthly" }],
+            [{ text: "🏆 Annual — 1000 Stars (Best Value)", callback_data: "stars_annual" }],
+            [{ text: "🇮🇳 Pay ₹29 (India only)", url: paymentLink }],
+          ]
+        };
+
+    await bot.sendMessage(chatId, premiumMsg, {
+      parse_mode: "MarkdownV2",
+      disable_web_page_preview: true,
+      reply_markup: keyboard,
+    });
   } catch (err) {
     console.error("Premium error:", err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  /streak
+// ═══════════════════════════════════════════════════════════
+bot.onText(/\/streak/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    const user    = await getUser(msg);
+    const streak  = user.currentStreak || 0;
+    const longest = user.longestStreak || 0;
+    const claimed = user.streakMilestones || [];
+
+    const sEmoji  = streakEmoji(streak);
+    const sNext   = nextMilestone(streak);
+    const sDaysTo = sNext ? sNext - streak : null;
+
+    // Progress bar toward next milestone (20 chars wide)
+    let progressBar = "";
+    if (sNext) {
+      const prev    = STREAK_MILESTONES[STREAK_MILESTONES.indexOf(sNext) - 1] || 0;
+      const total   = sNext - prev;
+      const done    = streak - prev;
+      const filled  = Math.round((done / total) * 20);
+      progressBar   = "▓".repeat(filled) + "░".repeat(20 - filled);
+    }
+
+    // Last streak date display
+    const lastDate = user.lastStreakDate
+      ? new Date(user.lastStreakDate).toDateString()
+      : "Never";
+
+    // Check if streak is at risk (last download wasn't today)
+    const todayUTC = new Date();
+    todayUTC.setUTCHours(0, 0, 0, 0);
+    const lastUTC = user.lastStreakDate ? new Date(user.lastStreakDate) : null;
+    if (lastUTC) lastUTC.setUTCHours(0, 0, 0, 0);
+    const downloadedToday = lastUTC && lastUTC.getTime() === todayUTC.getTime();
+    const atRisk = streak > 0 && !downloadedToday;
+
+    const milestoneStatus =
+      `${claimed.includes("streak_3")   ? "✅" : "⏳"} 3\\-day streak — \\+1 bonus download\n` +
+      `${claimed.includes("streak_7")   ? "✅" : "⏳"} 7\\-day streak — \\+3 bonus downloads\n` +
+      `${claimed.includes("streak_30")  ? "✅" : "⏳"} 30\\-day streak — 1 Month *FREE Premium* 🏆\n` +
+      `${claimed.includes("streak_100") ? "✅" : "⏳"} 100\\-day streak — 3 Months *FREE Premium* 👑`;
+
+    let streakMsg =
+      `${sEmoji} *Your Download Streak*\n\n` +
+      `🔥 Current streak: *${streak} day${streak !== 1 ? "s" : ""}*\n` +
+      `🏅 Best streak: *${longest} days*\n` +
+      `📅 Last download: *${downloadedToday ? "Today ✅" : atRisk ? lastDate + " ⚠️" : lastDate}*\n`;
+
+    if (atRisk) {
+      streakMsg += `\n⚠️ *Download today to keep your streak\\!*\n`;
+    }
+
+    if (sDaysTo && progressBar) {
+      streakMsg +=
+        `\n*Progress → ${sNext} days:*\n` +
+        `${progressBar}\n` +
+        (sNext === 30
+          ? `🎯 *${sDaysTo} more days → FREE 1\\-Month Premium\\!*\n`
+          : sNext === 100
+          ? `🎯 *${sDaysTo} more days → 3 Months FREE Premium 👑*\n`
+          : `🎯 *${sDaysTo} more days → bonus downloads\\!*\n`);
+    }
+
+    streakMsg +=
+      `\n━━━━━━━━━━━━━━━━━━━━\n` +
+      `🏆 *Milestones:*\n` +
+      milestoneStatus;
+
+    if (streak === 0) {
+      streakMsg +=
+        `\n\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `_Send a video link to start your streak\\!_`;
+    }
+
+    await bot.sendMessage(chatId, streakMsg, { parse_mode: "MarkdownV2" });
+  } catch (err) {
+    console.error("Streak command error:", err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  /gift — send premium to any friend
+// ═══════════════════════════════════════════════════════════
+bot.onText(/\/gift(?:\s+(.+))?/, async (msg, match) => {
+  const chatId  = msg.chat.id;
+  const giverId = msg.from.id.toString();
+  try {
+    const giver = await getUser(msg);
+    const raw   = (match[1] || "").trim();
+
+    // No argument — show usage
+    if (!raw) {
+      await bot.sendMessage(
+        chatId,
+        `🎁 *Gift VidVault Premium*\n\n` +
+        `Give the gift of unlimited downloads to any friend\\!\n\n` +
+        `*How to use:*\n` +
+        `\`/gift @username\`\n\n` +
+        `_Your friend must have started @VidVaultFreeBot at least once\\._\n\n` +
+        `💡 _Tip: They don't need to pay — you cover it for them\\!_`,
+        { parse_mode: "MarkdownV2" }
+      );
+      return;
+    }
+
+    // Clean the username (strip leading @)
+    const username = raw.replace(/^@/, "").trim();
+
+    // Prevent self-gifting
+    const myUsername = (msg.from.username || "").toLowerCase();
+    if (username.toLowerCase() === myUsername || username === giverId) {
+      await bot.sendMessage(
+        chatId,
+        `😄 *You can't gift yourself\\!*\n\nShare the love with a friend instead 💙`,
+        { parse_mode: "MarkdownV2" }
+      );
+      return;
+    }
+
+    // Look up recipient — must have started the bot (exists in our DB)
+    const recipient = await TelegramUser.findOne({
+      username: { $regex: new RegExp(`^${username}$`, "i") },
+    });
+
+    if (!recipient) {
+      await bot.sendMessage(
+        chatId,
+        `❌ *User @${esc(username)} not found\\!*\n\n` +
+        `They haven't started @VidVaultFreeBot yet\\.\n\n` +
+        `Ask them to send \`/start\` to @VidVaultFreeBot first, then try again\\!\n\n` +
+        `_This is a great excuse to introduce them to VidVault 😊_`,
+        { parse_mode: "MarkdownV2" }
+      );
+      return;
+    }
+
+    const recipientName = esc(recipient.firstName || recipient.username || "your friend");
+    const indian        = isIndianUser(giver);
+
+    // Create Razorpay gift links — recipient's ID in notes so webhook activates them
+    const monthlyLink = await createRazorpayLink(
+      recipient, "monthly",
+      { is_gift: "true", gift_from_id: giverId }
+    );
+    const annualLink = await createRazorpayLink(
+      recipient, "annual",
+      { is_gift: "true", gift_from_id: giverId }
+    );
+
+    // callback_data encodes the recipient's telegramId (≤64 bytes — verified safe)
+    const giftMsg =
+      `🎁 *Gift Premium to ${recipientName}\\!*\n\n` +
+      `✅ Unlimited downloads — instantly activated\n` +
+      `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
+      `✅ Valid for 30 days \\(or 1 year\\)\n\n` +
+      `_They'll get a surprise notification the moment you pay\\!_ 🎉\n\n` +
+      `Choose a plan 👇`;
+
+    const keyboard = indian
+      ? {
+          inline_keyboard: [
+            [{ text: "🎁 Gift Monthly — ₹29",              url: monthlyLink }],
+            [{ text: "🎁 Gift Annual  — ₹249 (Best Value)", url: annualLink }],
+            [{ text: "⭐ Gift with Telegram Stars",         callback_data: `gift_stars_menu_${recipient.telegramId}` }],
+          ],
+        }
+      : {
+          inline_keyboard: [
+            [{ text: "⭐ Gift Monthly — 150 Stars",          callback_data: `gift_stars_monthly_${recipient.telegramId}` }],
+            [{ text: "⭐ Gift Annual  — 1000 Stars (Best)",  callback_data: `gift_stars_annual_${recipient.telegramId}` }],
+            [{ text: "🇮🇳 Gift ₹29 (India only)",            url: monthlyLink }],
+          ],
+        };
+
+    await bot.sendMessage(chatId, giftMsg, {
+      parse_mode: "MarkdownV2",
+      disable_web_page_preview: true,
+      reply_markup: keyboard,
+    });
+  } catch (err) {
+    console.error("Gift command error:", err);
   }
 });
 
@@ -466,7 +1231,9 @@ bot.onText(/\/help/, async (msg) => {
     `*Commands:*\n` +
     `/start — Welcome\n` +
     `/status — Your account\n` +
+    `/streak — Your download streak 🔥\n` +
     `/premium — Upgrade\n` +
+    `/gift @username — Gift premium to a friend 🎁\n` +
     `/referral — Earn free downloads\n` +
     `/language — Change language 🌍\n` +
     `/help — This message\n` +
@@ -537,7 +1304,27 @@ bot.onText(/\/stats/, async (msg) => {
       TelegramUser.countDocuments({ joinedAt: { $gte: monthStart } }),
     ]);
 
-    const revenue = premiumUsers * 29;
+    // Streak stats — aggregate in one query
+    const streakAgg = await TelegramUser.aggregate([
+      { $group: {
+          _id: null,
+          avgStreak:    { $avg: "$currentStreak" },
+          maxStreak:    { $max: "$currentStreak" },
+          usersOnStreak:{ $sum: { $cond: [{ $gte: ["$currentStreak", 2] }, 1, 0] } },
+          streak7plus:  { $sum: { $cond: [{ $gte: ["$currentStreak", 7] }, 1, 0] } },
+          streak30plus: { $sum: { $cond: [{ $gte: ["$currentStreak", 30] }, 1, 0] } },
+      }}
+    ]);
+    const sa = streakAgg[0] || {};
+
+    const [revenue, tasteUsed, tasteConverted] = await Promise.all([
+      Promise.resolve(premiumUsers * 29),
+      TelegramUser.countDocuments({ hasUsed4KTaste: true }),
+      TelegramUser.countDocuments({ hasUsed4KTaste: true, plan: "premium" }),
+    ]);
+    const tasteRate = tasteUsed > 0
+      ? ((tasteConverted / tasteUsed) * 100).toFixed(1)
+      : "0";
 
     await bot.sendMessage(
       msg.chat.id,
@@ -551,7 +1338,16 @@ bot.onText(/\/stats/, async (msg) => {
       `⭐ *Premium*\n` +
       `• Premium users: *${premiumUsers}*\n` +
       `• Monthly revenue: *₹${revenue}*\n\n` +
-      `📈 *Conversion rate:* *${esc(totalUsers > 0 ? ((premiumUsers / totalUsers) * 100).toFixed(1) : "0")}%*`,
+      `📈 *Conversion rate:* *${esc(totalUsers > 0 ? ((premiumUsers / totalUsers) * 100).toFixed(1) : "0")}%*\n\n` +
+      `🎁 *4K Taste*\n` +
+      `• Used taste: *${tasteUsed}*\n` +
+      `• Converted after taste: *${tasteConverted}* \\(${esc(tasteRate)}%\\)\n\n` +
+      `🔥 *Streaks*\n` +
+      `• Users on streak \\(2\\+\\): *${sa.usersOnStreak || 0}*\n` +
+      `• 7\\+ day streaks: *${sa.streak7plus || 0}*\n` +
+      `• 30\\+ day streaks: *${sa.streak30plus || 0}*\n` +
+      `• Avg streak: *${sa.avgStreak ? sa.avgStreak.toFixed(1) : "0"} days*\n` +
+      `• Longest streak: *${sa.maxStreak || 0} days*`,
       { parse_mode: "MarkdownV2" }
     );
   } catch (err) {
@@ -630,22 +1426,34 @@ bot.on("message", async (msg) => {
       if (user.plan === "free" && user.downloadsThisMonth >= effectiveLimit) {
         const days        = daysUntilReset(user.monthResetDate);
         const paymentLink = await createPaymentLink(user);
-        await bot.sendMessage(
-          chatId,
-          t(user.language, "limitReached", {
-            total: user.totalDownloads,
-            days,
-            link: escUrl(paymentLink),
-          }),
-          {
-            parse_mode: "MarkdownV2",
-            reply_markup: {
-              inline_keyboard: [[
-                { text: "⭐ Upgrade Now — ₹29/month", callback_data: "upgrade" }
-              ]]
-            }
-          }
-        );
+        const indian      = isIndianUser(user);
+        const streakFomo  = getStreakFomoLine(user); // empty string if streak < 2
+
+        const wallMsg = indian
+          ? `🚫 *Monthly limit reached\\!*\n\n` +
+            `You've used all *${effectiveLimit} free downloads* this month\\.\n` +
+            `You've downloaded *${user.totalDownloads} videos* total — you clearly love VidVault 💪\n` +
+            streakFomo +
+            `\n⏳ Wait *${days} days* for free reset\n\n` +
+            `OR unlock everything right now:\n` +
+            `✅ Unlimited downloads\n` +
+            `✅ 4K \\+ 1080p \\+ MP3 320k\n\n` +
+            `~₹99~ *₹29/month* — less than one chai ☕`
+          : `🚫 *You've reached your limit\\!*\n\n` +
+            `You've downloaded *${user.totalDownloads} videos* total — great taste 🎬\n` +
+            streakFomo +
+            `\n⏳ Wait *${days} days* for free reset\n\n` +
+            `OR go unlimited right now:\n` +
+            `✅ Unlimited downloads\n` +
+            `✅ 4K \\+ 1080p \\+ MP3 320k\n` +
+            `✅ Used by people in *50\\+ countries*\n\n` +
+            `⭐ *150 Stars/month* — less than a coffee ☕`;
+
+        await bot.sendMessage(chatId, wallMsg, {
+          parse_mode: "MarkdownV2",
+          disable_web_page_preview: true,
+          reply_markup: getPaymentKeyboard(paymentLink, indian),
+        });
         return;
       }
 
@@ -666,9 +1474,12 @@ bot.on("message", async (msg) => {
 
       try { await bot.deleteMessage(chatId, loadingMsg.message_id); } catch {}
 
-      const isPremium = user.plan === "premium";
+      const isPremium  = user.plan === "premium";
+      const hasTaste   = !isPremium && !user.hasUsed4KTaste;
       const effectiveLimitDisplay = FREE_LIMIT + (user.bonusDownloads || 0);
-      const remaining = effectiveLimitDisplay - user.downloadsThisMonth;
+      const remaining  = effectiveLimitDisplay - user.downloadsThisMonth;
+
+      const tasteHint  = hasTaste ? `\n🎁 *Free 4K taste available — tap below\\!*` : "";
 
       const caption =
         `🎬 *${esc(title)}*\n\n` +
@@ -676,13 +1487,13 @@ bot.on("message", async (msg) => {
         `${duration ? `  •  ⏱ ${esc(duration)}` : ""}\n\n` +
         `${isPremium
           ? `⭐ *Premium* — All qualities unlocked`
-          : `🆓 *Free* — ${remaining} download${remaining !== 1 ? "s" : ""} left this month`
+          : `🆓 *Free* — ${remaining} download${remaining !== 1 ? "s" : ""} left this month${tasteHint}`
         }\n\n` +
         `👇 *Select quality:*`;
 
       const msgOptions = {
         parse_mode: "MarkdownV2",
-        reply_markup: getQualityKeyboard(isPremium),
+        reply_markup: getQualityKeyboard(isPremium, hasTaste),
       };
 
       // Show thumbnail if available — creates desire before quality selection
@@ -781,6 +1592,7 @@ bot.on("callback_query", async (query) => {
         show_alert: true,
       });
       const paymentLink = await createPaymentLink(user);
+      const indian      = isIndianUser(user);
       await bot.sendMessage(
         chatId,
         `🔒 *Premium quality*\n\n` +
@@ -788,16 +1600,11 @@ bot.on("callback_query", async (query) => {
         `✅ Unlock with Premium:\n` +
         `🎬 1080p \\+ 4K \\+ MP3 320k\n` +
         `🚀 Unlimited downloads\n\n` +
-        `~₹99~ *₹29/month* — tap below 👇`,
+        `${indian ? `~₹99~ *₹29/month*` : `⭐ *150 Stars/month*`} — tap below 👇`,
         {
           parse_mode: "MarkdownV2",
           disable_web_page_preview: true,
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "🇮🇳 Pay ₹29 — UPI / GPay / Cards", url: paymentLink }],
-              [{ text: "⭐ Pay with Telegram Stars", callback_data: "stars_pay" }],
-            ]
-          }
+          reply_markup: getPaymentKeyboard(paymentLink, indian),
         }
       );
       return;
@@ -807,22 +1614,49 @@ bot.on("callback_query", async (query) => {
     if (data === "upgrade") {
       await bot.answerCallbackQuery(query.id);
       const paymentLink = await createPaymentLink(user);
+      const indian      = isIndianUser(user);
       await bot.sendMessage(
         chatId,
-        `⭐ *VidVault Premium*\n\n` +
-        `✅ Unlimited downloads\n` +
-        `✅ 1080p \\+ 4K quality\n` +
-        `✅ Activates in seconds\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `🇮🇳 *India:* ~₹99~ *₹29/month*\n` +
-        `🌍 *International:* ⭐ *75 Stars*\n\n` +
-        `_Less than one chai per day ☕_`,
+        indian
+          ? `⭐ *VidVault Premium — ₹29/month*\n\n✅ Unlimited downloads\n✅ 4K \\+ 1080p quality\n✅ Activates in seconds\n\n~₹99~ *₹29/month* — less than one chai ☕`
+          : `⭐ *VidVault Premium — 150 Stars/month*\n\n✅ Unlimited downloads\n✅ 4K \\+ 1080p quality\n✅ Activates in seconds\n✅ Trusted in 50\\+ countries\n\n⭐ *150 Stars* — less than a coffee ☕`,
+        {
+          parse_mode: "MarkdownV2",
+          disable_web_page_preview: true,
+          reply_markup: getPaymentKeyboard(paymentLink, indian),
+        }
+      );
+      return;
+    }
+
+    // ── Stars monthly ─────────────────────────────────────
+    if (data === "stars_pay" || data === "stars_monthly") {
+      await bot.answerCallbackQuery(query.id);
+      await sendStarsInvoiceForPlan(chatId, user, "monthly");
+      return;
+    }
+
+    // ── Stars annual ──────────────────────────────────────
+    if (data === "stars_annual") {
+      await bot.answerCallbackQuery(query.id);
+      await sendStarsInvoiceForPlan(chatId, user, "annual");
+      return;
+    }
+
+    // ── Stars plan menu (for Indian users who want Stars) ─
+    if (data === "stars_plan_menu") {
+      await bot.answerCallbackQuery(query.id);
+      await bot.sendMessage(chatId,
+        `⭐ *Pay with Telegram Stars*\n\n` +
+        `📅 *Monthly:* 150 Stars \\(≈ \\$2\\)\n` +
+        `🏆 *Annual:* 1000 Stars — _save 800 Stars_ 🔥\n\n` +
+        `Choose your plan 👇`,
         {
           parse_mode: "MarkdownV2",
           reply_markup: {
             inline_keyboard: [
-              [{ text: "🇮🇳 Pay ₹29 — UPI/Cards", url: paymentLink }],
-              [{ text: "⭐ Pay with Telegram Stars", callback_data: "stars_pay" }],
+              [{ text: "📅 Monthly — 150 Stars", callback_data: "stars_monthly" }],
+              [{ text: "🏆 Annual — 1000 Stars (Best Value)", callback_data: "stars_annual" }],
             ]
           }
         }
@@ -830,10 +1664,52 @@ bot.on("callback_query", async (query) => {
       return;
     }
 
-    // ── Telegram Stars payment ────────────────────────────
-    if (data === "stars_pay") {
+    // ── Gift: Stars plan menu (Indian givers who prefer Stars) ───
+    if (data.startsWith("gift_stars_menu_")) {
+      const recipientId = data.slice("gift_stars_menu_".length);
       await bot.answerCallbackQuery(query.id);
-      await sendStarsInvoice(chatId, user);
+      const rec = await TelegramUser.findOne({ telegramId: recipientId }).lean();
+      const recName = esc(rec?.firstName || rec?.username || "your friend");
+      await bot.sendMessage(
+        chatId,
+        `⭐ *Gift with Telegram Stars*\n\n` +
+        `Gifting to: *${recName}*\n\n` +
+        `📅 *Monthly:* 150 Stars \\(≈ \\$2\\)\n` +
+        `🏆 *Annual:* 1000 Stars — _save 800 Stars_ 🔥\n\n` +
+        `Choose a plan 👇`,
+        {
+          parse_mode: "MarkdownV2",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🎁 Gift Monthly — 150 Stars",         callback_data: `gift_stars_monthly_${recipientId}` }],
+              [{ text: "🎁 Gift Annual  — 1000 Stars (Best)", callback_data: `gift_stars_annual_${recipientId}` }],
+            ],
+          },
+        }
+      );
+      return;
+    }
+
+    // ── Gift: Stars invoice ───────────────────────────────
+    if (data.startsWith("gift_stars_monthly_") || data.startsWith("gift_stars_annual_")) {
+      const isAnnualGift = data.startsWith("gift_stars_annual_");
+      const prefix       = isAnnualGift ? "gift_stars_annual_" : "gift_stars_monthly_";
+      const recipientId  = data.slice(prefix.length);
+      await bot.answerCallbackQuery(query.id);
+
+      const rec     = await TelegramUser.findOne({ telegramId: recipientId }).lean();
+      const recName = rec?.firstName || rec?.username || "your friend";
+
+      await bot.sendInvoice(
+        chatId,
+        isAnnualGift ? `🎁 VidVault Premium Gift — 1 Year` : `🎁 VidVault Premium Gift — 1 Month`,
+        `Gift unlimited downloads to ${recName}! Activates instantly on payment.`,
+        `gift_${isAnnualGift ? "annual" : "monthly"}_${recipientId}`,
+        "",
+        "XTR",
+        [{ label: isAnnualGift ? "VidVault Premium Gift (1 Year)" : "VidVault Premium Gift (1 Month)",
+           amount: isAnnualGift ? 1000 : STARS_PRICE }]
+      );
       return;
     }
 
@@ -870,8 +1746,8 @@ bot.on("callback_query", async (query) => {
 //  DOWNLOAD HANDLER
 // ═══════════════════════════════════════════════════════════
 async function handleDownload(chatId, user, url, params) {
-  const userId           = user.telegramId;
-  const { quality, format, label } = params;
+  const userId                       = user.telegramId;
+  const { quality, format, label, isTaste = false } = params;
 
   if (activeUsers.has(userId)) {
     await bot.sendMessage(chatId,
@@ -888,12 +1764,17 @@ async function handleDownload(chatId, user, url, params) {
     activeUsers.delete(userId);
     const days        = daysUntilReset(user.monthResetDate);
     const paymentLink = await createPaymentLink(user);
+    const indian      = isIndianUser(user);
     await bot.sendMessage(
       chatId,
       `⚠️ *Monthly limit reached\\!*\n\n` +
-      `Resets in *${days} days* OR upgrade now:\n` +
-      `👉 ${escUrl(paymentLink)}`,
-      { parse_mode: "MarkdownV2" }
+      `You've used all *${effectiveLimit} free downloads* this month\\.\n` +
+      `Resets in *${days} days* OR unlock everything now 👇`,
+      {
+        parse_mode: "MarkdownV2",
+        disable_web_page_preview: true,
+        reply_markup: getPaymentKeyboard(paymentLink, indian),
+      }
     );
     return;
   }
@@ -916,7 +1797,20 @@ async function handleDownload(chatId, user, url, params) {
 
       user.downloadsThisMonth += 1;
       user.totalDownloads     += 1;
+
+      // Mark taste used — only on successful download, never on failure
+      if (isTaste) user.hasUsed4KTaste = true;
+
+      // Update streak before saving — updateStreak mutates user in-place
+      const { incremented, milestone } = updateStreak(user);
       await user.save();
+
+      // Milestone reward (async send, don't block download confirmation)
+      if (milestone) {
+        applyStreakMilestone(chatId, user, milestone)
+          .then(() => user.save())
+          .catch(err => console.error("Streak milestone error:", err.message));
+      }
 
       pendingDownloads.delete(userId);
       try { await bot.deleteMessage(chatId, processingMsg.message_id); } catch {}
@@ -925,13 +1819,14 @@ async function handleDownload(chatId, user, url, params) {
       const safeTitle  = esc(data.title || "Your video");
       const safeUrl    = escUrl(encodeURI(data.downloadUrl));
 
-      // Create payment link only if nudge will actually use it (download 4)
-      let paymentLink = null;
-      if (!isPremium && user.downloadsThisMonth === 4) {
-        paymentLink = await createPaymentLink(user);
-      }
-
-      const nudge = isPremium ? "" : getUpgradeNudge(user.downloadsThisMonth, paymentLink);
+      // Streak line only on day 2+ and only when streak actually incremented today
+      const streakLine = getStreakLine(user, incremented);
+      // Taste nudge overrides the regular nudge — it's more targeted
+      const nudge = isPremium
+        ? ""
+        : isTaste
+        ? getTasteNudge(user)
+        : getUpgradeNudge(user.downloadsThisMonth, user);
 
       await bot.sendMessage(
         chatId,
@@ -944,7 +1839,7 @@ async function handleDownload(chatId, user, url, params) {
           used:     user.downloadsThisMonth,
           limit:    FREE_LIMIT + (user.bonusDownloads || 0),
           isPremium,
-        }) + nudge,
+        }) + streakLine + nudge,
         { parse_mode: "MarkdownV2" }
       );
 
@@ -1051,6 +1946,49 @@ bot.onText(/\/redeem(?:\s+(.+))?/, async (msg, match) => {
 });
 
 // ═══════════════════════════════════════════════════════════
+//  /broadcast — admin manual broadcast trigger
+// ═══════════════════════════════════════════════════════════
+bot.onText(/\/broadcast(?:\s+(.+))?/, async (msg, match) => {
+  if (msg.from.id.toString() !== process.env.TELEGRAM_ADMIN_ID) return;
+  const chatId = msg.chat.id;
+  const sub    = (match[1] || "").trim().toLowerCase();
+
+  if (sub === "friday") {
+    await bot.sendMessage(chatId, `📤 Starting Friday broadcast\\.\\.\\.`, { parse_mode: "MarkdownV2" });
+    runFridayBroadcast().catch(e => bot.sendMessage(chatId, `❌ ${esc(e.message)}`));
+  } else if (sub === "monthend") {
+    await bot.sendMessage(chatId, `📤 Starting month\\-end broadcast\\.\\.\\.`, { parse_mode: "MarkdownV2" });
+    runMonthEndBroadcast().catch(e => bot.sendMessage(chatId, `❌ ${esc(e.message)}`));
+  } else if (sub === "winback") {
+    await bot.sendMessage(chatId, `📤 Starting win\\-back broadcast\\.\\.\\.`, { parse_mode: "MarkdownV2" });
+    runWinBackBroadcast().catch(e => bot.sendMessage(chatId, `❌ ${esc(e.message)}`));
+  } else if (sub === "test") {
+    // Preview: send only to admin
+    await bot.sendMessage(
+      chatId,
+      `🎉 *Weekend Special\\!*\n\n` +
+      `✅ Unlimited downloads\n` +
+      `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n\n` +
+      `~₹99~ *₹29/month* — less than one chai ☕\n\n👉 /premium`,
+      { parse_mode: "MarkdownV2" }
+    );
+    await bot.sendMessage(chatId, `_This is what the Friday broadcast looks like\\._`, { parse_mode: "MarkdownV2" });
+  } else {
+    await bot.sendMessage(
+      chatId,
+      `📤 *Manual Broadcast Commands:*\n\n` +
+      `/broadcast friday — Weekend deal to all free users\n` +
+      `/broadcast monthend — Month\\-end urgency \\(28th\\)\n` +
+      `/broadcast winback — 7\\-day inactive users\n` +
+      `/broadcast test — Preview the message \\(admin only\\)\n\n` +
+      `_All broadcasts skip premium and blocked users\\._\n` +
+      `_Each user gets at most 1 broadcast per day\\._`,
+      { parse_mode: "MarkdownV2" }
+    );
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
 //  /broadcast10k — admin-only mass celebration message
 //  Only works for TELEGRAM_ADMIN_ID
 // ═══════════════════════════════════════════════════════════
@@ -1130,56 +2068,116 @@ bot.on("message", async (msg) => {
   if (!msg.successful_payment) return;
 
   const chatId  = msg.chat.id;
-  const userId  = msg.from.id.toString();
+  const giverId = msg.from.id.toString();
   const payment = msg.successful_payment;
 
   try {
-    // Only handle Stars payments (XTR currency)
     if (payment.currency !== "XTR") return;
 
-    const user = await TelegramUser.findOne({ telegramId: userId });
-    if (!user) return;
+    const payload   = payment.invoice_payload || "";
+    const isGift    = payload.startsWith("gift_");
+    const isAnnual  = payload.includes("annual");
+    const days      = isAnnual ? 365 : 30;
+    const adminId   = process.env.TELEGRAM_ADMIN_ID;
 
-    // Activate or EXTEND premium by 30 days
-    const now = Date.now();
-    const currentExpiry = user.premiumEndDate ? new Date(user.premiumEndDate).getTime() : now;
-    const base = currentExpiry > now ? currentExpiry : now; // extend if already active
-    user.plan             = "premium";
-    user.premiumStartDate = user.premiumStartDate || new Date();
-    user.premiumEndDate   = new Date(base + 30 * 24 * 60 * 60 * 1000);
-    await user.save();
-
-    console.log(`⭐ Stars payment: ${userId} paid ${payment.total_amount} Stars — premium activated`);
-
-    // Notify admin
-    const adminId = process.env.TELEGRAM_ADMIN_ID;
-    if (adminId) {
-      await bot.sendMessage(
-        adminId,
-        `⭐ *Stars Payment Received\\!*\n\n` +
-        `👤 User: ${esc(user.firstName || user.username || userId)} \\(@${esc(user.username || "unknown")}\\)\n` +
-        `🆔 ID: \`${userId}\`\n` +
-        `⭐ Stars: *${payment.total_amount}*\n` +
-        `📅 Expires: ${new Date(user.premiumEndDate).toDateString()}`,
-        { parse_mode: "MarkdownV2" }
-      ).catch(() => {});
+    // Determine who receives premium: recipient for gifts, giver for self-purchase
+    let recipientId;
+    if (isGift) {
+      // payload format: "gift_monthly_123456789" or "gift_annual_123456789"
+      const parts = payload.split("_");
+      recipientId = parts[parts.length - 1];
+    } else {
+      recipientId = giverId;
     }
 
-    // Confirm to user
-    await bot.sendMessage(
-      chatId,
-      `🎉 *Payment Successful\\!*\n\n` +
-      `⭐ Thank you for *${payment.total_amount} Stars\\!*\n\n` +
-      `✅ *VidVault Premium is now ACTIVE*\n\n` +
-      `You now have:\n` +
-      `🚀 *Unlimited* downloads\n` +
-      `🎬 *4K Ultra \\+ 1080p* quality\n` +
-      `🎵 *MP3 320k* audio\n` +
-      `✅ Valid for *30 days*\n\n` +
-      `Just send any video link to start\\! 🎬\n\n` +
-      `_Type /status to see your premium account_`,
-      { parse_mode: "MarkdownV2" }
-    );
+    // Find or create recipient account
+    let recipient = await TelegramUser.findOne({ telegramId: recipientId });
+    if (!recipient) {
+      recipient = new TelegramUser({ telegramId: recipientId });
+      recipient.generateReferralCode();
+    }
+
+    // EXTEND premium — never reset remaining days
+    const now           = Date.now();
+    const currentExpiry = recipient.premiumEndDate ? new Date(recipient.premiumEndDate).getTime() : now;
+    const base          = currentExpiry > now ? currentExpiry : now;
+    recipient.plan             = "premium";
+    recipient.premiumStartDate = recipient.premiumStartDate || new Date();
+    recipient.premiumEndDate   = new Date(base + days * 24 * 60 * 60 * 1000);
+    await recipient.save();
+
+    console.log(`⭐ Stars ${isGift ? "gift" : "purchase"}: ${giverId} paid ${payment.total_amount} Stars → ${recipientId} premium activated`);
+
+    if (isGift && recipientId !== giverId) {
+      // ── Gift flow ──────────────────────────────────────────
+      const giver = await TelegramUser.findOne({ telegramId: giverId }).lean();
+      const giverName = esc(giver?.firstName || giver?.username || "Someone");
+
+      // Notify recipient — surprise!
+      bot.sendMessage(
+        recipientId,
+        `🎁 *You received a VidVault Premium Gift\\!*\n\n` +
+        `*${giverName}* gifted you *${days} days of Premium* 🎉\n\n` +
+        `✅ Unlimited downloads — NOW ACTIVE\n` +
+        `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
+        `✅ Valid for *${days} days*${isAnnual ? " 🏆" : ""}\n\n` +
+        `Just send any video link to start\\! 🎬\n` +
+        `_Type /status to see your account_`,
+        { parse_mode: "MarkdownV2" }
+      ).catch(() => {});
+
+      // Confirm to giver
+      await bot.sendMessage(
+        chatId,
+        `✅ *Gift Sent Successfully\\!*\n\n` +
+        `🎁 *${days} days of Premium* has been gifted\\!\n` +
+        `They've been notified instantly 🎉\n\n` +
+        `_Thank you for spreading VidVault\\! 💙_`,
+        { parse_mode: "MarkdownV2" }
+      );
+
+      // Notify admin
+      if (adminId) {
+        bot.sendMessage(
+          adminId,
+          `🎁 *Gift Purchase\\!*\n\n` +
+          `From: \`${giverId}\`\n` +
+          `To: \`${recipientId}\`\n` +
+          `⭐ Stars: *${payment.total_amount}*\n` +
+          `📦 Plan: *${isAnnual ? "Annual 🏆" : "Monthly"}*`,
+          { parse_mode: "MarkdownV2" }
+        ).catch(() => {});
+      }
+
+    } else {
+      // ── Normal self-purchase ───────────────────────────────
+      if (adminId) {
+        bot.sendMessage(
+          adminId,
+          `⭐ *Stars Payment Received\\!*\n\n` +
+          `👤 User: ${esc(recipient.firstName || recipient.username || giverId)} \\(@${esc(recipient.username || "unknown")}\\)\n` +
+          `🆔 ID: \`${giverId}\`\n` +
+          `⭐ Stars: *${payment.total_amount}*\n` +
+          `📦 Plan: *${isAnnual ? "Annual 🏆" : "Monthly"}*\n` +
+          `📅 Expires: ${new Date(recipient.premiumEndDate).toDateString()}`,
+          { parse_mode: "MarkdownV2" }
+        ).catch(() => {});
+      }
+
+      await bot.sendMessage(
+        chatId,
+        `🎉 *Payment Successful\\!*\n\n` +
+        `⭐ Thank you for *${payment.total_amount} Stars\\!*\n\n` +
+        `✅ *VidVault Premium is now ACTIVE*\n\n` +
+        `🚀 Unlimited downloads\n` +
+        `🎬 4K Ultra \\+ 1080p quality\n` +
+        `🎵 MP3 320k audio\n` +
+        `✅ Valid for *${days} days*${isAnnual ? " 🏆" : ""}\n\n` +
+        `Just send any video link to start\\! 🎬\n` +
+        `_Type /status to check your account_`,
+        { parse_mode: "MarkdownV2" }
+      );
+    }
   } catch (err) {
     console.error("successful_payment error:", err.message);
   }

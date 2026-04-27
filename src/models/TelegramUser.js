@@ -67,6 +67,16 @@ const telegramUserSchema = new mongoose.Schema({
     type: [String],
     default: [],
   },
+  // ─── Streak tracking ────────────────────────────────────────────────
+  currentStreak:    { type: Number, default: 0 },
+  longestStreak:    { type: Number, default: 0 },
+  lastStreakDate:   { type: Date },              // UTC midnight of last streak day
+  streakMilestones: { type: [String], default: [] }, // ["streak_3", "streak_7", "streak_30", "streak_100"]
+  // ─── Broadcast management ───────────────────────────────────────────
+  blocked:           { type: Boolean, default: false }, // true = user blocked the bot
+  lastBroadcastDate: { type: Date },                    // last time any broadcast was sent
+  // ─── 4K taste ───────────────────────────────────────────────────────
+  hasUsed4KTaste: { type: Boolean, default: false },    // one-time free 4K download
 });
 
 // Auto reset monthly downloads
@@ -96,5 +106,15 @@ telegramUserSchema.methods.generateReferralCode = function () {
       Math.random().toString(36).substring(2, 6).toUpperCase();
   }
 };
+
+// ─── Performance indexes ─────────────────────────────────────────────────────
+// Broadcast: plan + blocked + lastBroadcastDate (all 3 in every broadcast query)
+telegramUserSchema.index({ plan: 1, blocked: 1, lastBroadcastDate: 1 });
+// Win-back broadcast: lastActive + totalDownloads
+telegramUserSchema.index({ lastActive: -1, totalDownloads: 1 });
+// Gift lookup by @username (case-insensitive regex query)
+telegramUserSchema.index({ username: 1 });
+// Premium expiry reminders
+telegramUserSchema.index({ premiumEndDate: 1, plan: 1 });
 
 module.exports = mongoose.model("TelegramUser", telegramUserSchema);

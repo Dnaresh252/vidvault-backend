@@ -71,7 +71,12 @@ router.post('/razorpay', async (req, res) => {
         return res.status(200).json({ status: 'ok' });
       }
 
-      // Activate premium
+      const isGift      = notes.is_gift === 'true';
+      const giftFromId  = notes.gift_from_id || null;
+      const isAnnual    = notes.plan_type === 'annual' || (payment?.amount >= 24900);
+      const days        = isAnnual ? 365 : 30;
+
+      // Activate premium for recipient (telegramId = recipient for gifts)
       let user = await TelegramUser.findOne({ telegramId });
       if (!user) {
         user = new TelegramUser({ telegramId });
@@ -79,28 +84,55 @@ router.post('/razorpay', async (req, res) => {
       }
 
       const wasAlreadyPremium = user.plan === 'premium';
+      // Extend from current expiry if still active — never lose remaining days
+      const now           = Date.now();
+      const currentExpiry = user.premiumEndDate ? new Date(user.premiumEndDate).getTime() : now;
+      const base          = currentExpiry > now ? currentExpiry : now;
       user.plan             = 'premium';
-      user.premiumStartDate = new Date();
-      user.premiumEndDate   = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      user.premiumStartDate = user.premiumStartDate || new Date();
+      user.premiumEndDate   = new Date(base + days * 24 * 60 * 60 * 1000);
       await user.save();
 
-      console.log(`✅ Premium activated for Telegram ID: ${telegramId} | Payment: ${paymentId}`);
+      console.log(`✅ Premium ${isGift ? 'gift' : 'activated'} for Telegram ID: ${telegramId} | Payment: ${paymentId}`);
 
-      // Notify user
+      // Notify recipient
       try {
         await bot.sendMessage(
           telegramId,
-          `🎉 *Premium Activated\\!*\n\n` +
-          `Welcome to VidVault Premium\\! ⭐\n\n` +
-          `✅ Unlimited downloads\n` +
-          `✅ 1080p \\+ 4K quality\n` +
-          `✅ Priority speed\n` +
-          `✅ Valid for 30 days\n\n` +
-          `Just send any video link to start\\! 🎬`,
+          isGift
+            ? `🎁 *You received a VidVault Premium Gift\\!*\n\n` +
+              `Someone gifted you *${days} days of Premium* 🎉\n\n` +
+              `✅ Unlimited downloads — NOW ACTIVE\n` +
+              `✅ 1080p \\+ 4K quality\n` +
+              `✅ Valid for *${days} days*${isAnnual ? ' 🏆' : ''}\n\n` +
+              `Just send any video link to start\\! 🎬`
+            : `🎉 *Premium Activated\\!*\n\n` +
+              `Welcome to VidVault Premium\\! ⭐\n\n` +
+              `✅ Unlimited downloads\n` +
+              `✅ 1080p \\+ 4K quality\n` +
+              `✅ Priority speed\n` +
+              `✅ Valid for *${days} days*${isAnnual ? ' 🏆' : ''}\n\n` +
+              `Just send any video link to start\\! 🎬`,
           { parse_mode: 'MarkdownV2' }
         );
       } catch (err) {
-        console.error('Failed to notify user:', err.message);
+        console.error('Failed to notify recipient:', err.message);
+      }
+
+      // If gift: confirm to the giver too
+      if (isGift && giftFromId) {
+        try {
+          await bot.sendMessage(
+            giftFromId,
+            `✅ *Gift Sent\\!*\n\n` +
+            `🎁 *${days} days of Premium* has been activated for your friend\\!\n` +
+            `They've been notified 🎉\n\n` +
+            `_Thank you for spreading VidVault\\! 💙_`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        } catch (err) {
+          console.error('Failed to notify giver:', err.message);
+        }
       }
 
       // Notify admin
@@ -109,13 +141,19 @@ router.post('/razorpay', async (req, res) => {
         try {
           await bot.sendMessage(
             adminId,
-            `💰 *New Premium Subscription\\!*\n\n` +
-            `Telegram ID: \`${telegramId}\`\n` +
-            `Username: ${esc(notes.username || 'Unknown')}\n` +
-            `Payment ID: \`${paymentId || 'N/A'}\`\n` +
-            `Amount: ₹29\n` +
-            `Renewal: ${wasAlreadyPremium ? 'Yes ♻️' : 'No 🆕'}\n` +
-            `Status: Auto\\-activated ✅`,
+            isGift
+              ? `🎁 *Gift Purchase\\!*\n\n` +
+                `From: \`${giftFromId || 'Unknown'}\`\n` +
+                `To: \`${telegramId}\`\n` +
+                `Payment ID: \`${paymentId || 'N/A'}\`\n` +
+                `Amount: ${isAnnual ? '₹249 \\(Annual\\)' : '₹29 \\(Monthly\\)'}`
+              : `💰 *New Premium Subscription\\!*\n\n` +
+                `Telegram ID: \`${telegramId}\`\n` +
+                `Username: ${esc(notes.username || 'Unknown')}\n` +
+                `Payment ID: \`${paymentId || 'N/A'}\`\n` +
+                `Amount: ${isAnnual ? '₹249 \\(Annual\\)' : '₹29 \\(Monthly\\)'}\n` +
+                `Renewal: ${wasAlreadyPremium ? 'Yes ♻️' : 'No 🆕'}\n` +
+                `Status: Auto\\-activated ✅`,
             { parse_mode: 'MarkdownV2' }
           );
         } catch (err) {
