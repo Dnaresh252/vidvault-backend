@@ -18,14 +18,29 @@ const INDIAN_LANGS = new Set(["hi", "ta", "te", "bn", "ur", "kn", "ml"]);
 function isIndianUser(user) {
   return INDIAN_LANGS.has(user.language || "");
 }
+// English users could be Indian or international — show both options equally
+function isEnglishUser(user) {
+  return (user.language || "en") === "en";
+}
 
-// Smart payment keyboard — right payment first based on user location
-function getPaymentKeyboard(paymentLink, isIndian) {
+// Smart payment keyboard — 3 states:
+// Indian language → ₹29 first
+// English (unknown region) → both shown with clear India / International labels
+// Other international → Stars first
+function getPaymentKeyboard(paymentLink, isIndian, isEnglish = false) {
   if (isIndian) {
     return {
       inline_keyboard: [
         [{ text: "🇮🇳 Pay ₹29 — UPI / GPay / Cards", url: paymentLink }],
         [{ text: "⭐ Pay with Telegram Stars", callback_data: "stars_pay" }],
+      ]
+    };
+  }
+  if (isEnglish) {
+    return {
+      inline_keyboard: [
+        [{ text: "🇮🇳 India — ₹29/month (UPI / Cards)", url: paymentLink }],
+        [{ text: "🌍 International — ⭐ 150 Stars ($2)", callback_data: "stars_pay" }],
       ]
     };
   }
@@ -507,43 +522,40 @@ function qualityToParams(data) {
 // Post-taste nudge — shown once after the free 4K taste download
 function getTasteNudge(user) {
   const indian = isIndianUser(user);
+  const english = isEnglishUser(user);
   return `\n━━━━━━━━━━━━━━━━━━━━\n` +
     `👑 *That was 4K Ultra\\!*\n` +
     `_That's what Premium feels like — every single download\\._\n\n` +
     (indian
       ? `Get unlimited 4K forever:\n~₹99~ *₹29/month* → /premium`
+      : english
+      ? `Get unlimited 4K forever:\n🇮🇳 *₹29/month* · 🌍 *150 Stars* → /premium`
       : `Get unlimited 4K forever:\n⭐ *150 Stars/month* → /premium`);
 }
 
 // Psychology nudge after download — language + streak aware
 function getUpgradeNudge(downloadsUsed, user) {
   const indian         = isIndianUser(user);
+  const english        = isEnglishUser(user);
   const effectiveLimit = FREE_LIMIT + (user.bonusDownloads || 0);
   const remaining      = effectiveLimit - downloadsUsed;
   const streak         = user.currentStreak || 0;
   const streakWarning  = streak >= 2 ? `🔥 Streak: *${streak} days* — upgrade to protect it\\!\n` : "";
+  const bothPricing    = `🇮🇳 *₹29/month* · 🌍 *150 Stars* → /premium`;
 
   if (remaining === 1) {
     return indian
-      ? `\n━━━━━━━━━━━━━━━━━━━━\n` +
-        `⚠️ *1 free download left this month\\!*\n` +
-        `${streakWarning}` +
-        `~₹99~ *₹29/month* → /premium`
-      : `\n━━━━━━━━━━━━━━━━━━━━\n` +
-        `⚠️ *1 free download left this month\\!*\n` +
-        `${streakWarning}` +
-        `⭐ *150 Stars/month* → /premium`;
+      ? `\n━━━━━━━━━━━━━━━━━━━━\n⚠️ *1 free download left this month\\!*\n${streakWarning}~₹99~ *₹29/month* → /premium`
+      : english
+      ? `\n━━━━━━━━━━━━━━━━━━━━\n⚠️ *1 free download left this month\\!*\n${streakWarning}${bothPricing}`
+      : `\n━━━━━━━━━━━━━━━━━━━━\n⚠️ *1 free download left this month\\!*\n${streakWarning}⭐ *150 Stars/month* → /premium`;
   }
   if (remaining === 0) {
     return indian
-      ? `\n━━━━━━━━━━━━━━━━━━━━\n` +
-        `🔥 *That was your last free download\\!*\n` +
-        `${streakWarning}` +
-        `~₹99~ *₹29/month* → /premium`
-      : `\n━━━━━━━━━━━━━━━━━━━━\n` +
-        `🔥 *That was your last free download\\!*\n` +
-        `${streakWarning}` +
-        `⭐ *150 Stars/month* → /premium`;
+      ? `\n━━━━━━━━━━━━━━━━━━━━\n🔥 *That was your last free download\\!*\n${streakWarning}~₹99~ *₹29/month* → /premium`
+      : english
+      ? `\n━━━━━━━━━━━━━━━━━━━━\n🔥 *That was your last free download\\!*\n${streakWarning}${bothPricing}`
+      : `\n━━━━━━━━━━━━━━━━━━━━\n🔥 *That was your last free download\\!*\n${streakWarning}⭐ *150 Stars/month* → /premium`;
   }
   return "";
 }
@@ -863,8 +875,11 @@ bot.onText(/\/status/, async (msg) => {
     const days      = daysUntilReset(user.monthResetDate);
 
     const indian    = isIndianUser(user);
+    const english   = isEnglishUser(user);
     const upgradePrompt = indian
       ? `⚡ *Go unlimited for ~₹99~ ₹29/month*`
+      : english
+      ? `⚡ *Go unlimited:* 🇮🇳 ₹29/month · 🌍 150 Stars`
       : `⚡ *Go unlimited for ⭐ 150 Stars/month*`;
 
     // Streak section
@@ -940,6 +955,7 @@ bot.onText(/\/premium/, async (msg) => {
     const paymentLink       = await createPaymentLink(user);
     const annualPaymentLink = await createAnnualPaymentLink(user);
     const indian            = isIndianUser(user);
+    const english           = isEnglishUser(user);
 
     const premiumMsg = indian
       ? `⭐ *VidVault Premium*\n` +
@@ -951,6 +967,22 @@ bot.onText(/\/premium/, async (msg) => {
         `━━━━━━━━━━━━━━━━━━━━\n` +
         `📅 *Monthly:* ~₹99~ *₹29/month*\n` +
         `🏆 *Annual:* *₹249/year* — _save ₹99_ 🔥\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `Choose your plan 👇`
+      : english
+      ? `⭐ *VidVault Premium*\n` +
+        `_Unlimited downloads\\. Zero limits\\._\n\n` +
+        `✅ Unlimited downloads\n` +
+        `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
+        `✅ All 25\\+ platforms\n` +
+        `✅ Activates instantly\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `🇮🇳 *India — UPI / Cards:*\n` +
+        `📅 Monthly: ~₹99~ *₹29/month*\n` +
+        `🏆 Annual: *₹249/year* — _save ₹99_ 🔥\n\n` +
+        `🌍 *International — Telegram Stars:*\n` +
+        `📅 Monthly: ⭐ *150 Stars* \\(≈ \\$2\\)\n` +
+        `🏆 Annual: ⭐ *1000 Stars* — _save 800_ 🔥\n` +
         `━━━━━━━━━━━━━━━━━━━━\n\n` +
         `Choose your plan 👇`
       : `⭐ *VidVault Premium*\n` +
@@ -971,6 +1003,15 @@ bot.onText(/\/premium/, async (msg) => {
             [{ text: "📅 Monthly — ₹29/month", url: paymentLink }],
             [{ text: "🏆 Annual — ₹249/year (Best Value)", url: annualPaymentLink }],
             [{ text: "⭐ Pay with Telegram Stars", callback_data: "stars_plan_menu" }],
+          ]
+        }
+      : english
+      ? {
+          inline_keyboard: [
+            [{ text: "🇮🇳 Monthly — ₹29/month (India)", url: paymentLink }],
+            [{ text: "🇮🇳 Annual — ₹249/year (India · Best Value)", url: annualPaymentLink }],
+            [{ text: "🌍 Monthly — ⭐ 150 Stars (International)", callback_data: "stars_monthly" }],
+            [{ text: "🌍 Annual — ⭐ 1000 Stars (International)", callback_data: "stars_annual" }],
           ]
         }
       : {
@@ -1346,7 +1387,7 @@ bot.onText(/\/stats/, async (msg) => {
       `• Users on streak \\(2\\+\\): *${sa.usersOnStreak || 0}*\n` +
       `• 7\\+ day streaks: *${sa.streak7plus || 0}*\n` +
       `• 30\\+ day streaks: *${sa.streak30plus || 0}*\n` +
-      `• Avg streak: *${sa.avgStreak ? sa.avgStreak.toFixed(1) : "0"} days*\n` +
+      `• Avg streak: *${esc(sa.avgStreak ? sa.avgStreak.toFixed(1) : "0")} days*\n` +
       `• Longest streak: *${sa.maxStreak || 0} days*`,
       { parse_mode: "MarkdownV2" }
     );
@@ -1427,7 +1468,8 @@ bot.on("message", async (msg) => {
         const days        = daysUntilReset(user.monthResetDate);
         const paymentLink = await createPaymentLink(user);
         const indian      = isIndianUser(user);
-        const streakFomo  = getStreakFomoLine(user); // empty string if streak < 2
+        const english     = isEnglishUser(user);
+        const streakFomo  = getStreakFomoLine(user);
 
         const wallMsg = indian
           ? `🚫 *Monthly limit reached\\!*\n\n` +
@@ -1439,20 +1481,28 @@ bot.on("message", async (msg) => {
             `✅ Unlimited downloads\n` +
             `✅ 4K \\+ 1080p \\+ MP3 320k\n\n` +
             `~₹99~ *₹29/month* — less than one chai ☕`
+          : english
+          ? `🚫 *Monthly limit reached\\!*\n\n` +
+            `You've downloaded *${user.totalDownloads} videos* total 🎬\n` +
+            streakFomo +
+            `\n⏳ Wait *${days} days* for free reset\n\n` +
+            `OR go unlimited right now:\n` +
+            `✅ Unlimited downloads\n` +
+            `✅ 4K \\+ 1080p \\+ MP3 320k\n\n` +
+            `🇮🇳 *₹29/month* \\(India\\) · 🌍 *150 Stars* \\(International\\)`
           : `🚫 *You've reached your limit\\!*\n\n` +
             `You've downloaded *${user.totalDownloads} videos* total — great taste 🎬\n` +
             streakFomo +
             `\n⏳ Wait *${days} days* for free reset\n\n` +
             `OR go unlimited right now:\n` +
             `✅ Unlimited downloads\n` +
-            `✅ 4K \\+ 1080p \\+ MP3 320k\n` +
-            `✅ Used by people in *50\\+ countries*\n\n` +
+            `✅ 4K \\+ 1080p \\+ MP3 320k\n\n` +
             `⭐ *150 Stars/month* — less than a coffee ☕`;
 
         await bot.sendMessage(chatId, wallMsg, {
           parse_mode: "MarkdownV2",
           disable_web_page_preview: true,
-          reply_markup: getPaymentKeyboard(paymentLink, indian),
+          reply_markup: getPaymentKeyboard(paymentLink, indian, english),
         });
         return;
       }
@@ -1593,6 +1643,7 @@ bot.on("callback_query", async (query) => {
       });
       const paymentLink = await createPaymentLink(user);
       const indian      = isIndianUser(user);
+      const english     = isEnglishUser(user);
       await bot.sendMessage(
         chatId,
         `🔒 *Premium quality*\n\n` +
@@ -1600,11 +1651,11 @@ bot.on("callback_query", async (query) => {
         `✅ Unlock with Premium:\n` +
         `🎬 1080p \\+ 4K \\+ MP3 320k\n` +
         `🚀 Unlimited downloads\n\n` +
-        `${indian ? `~₹99~ *₹29/month*` : `⭐ *150 Stars/month*`} — tap below 👇`,
+        `${indian ? `~₹99~ *₹29/month*` : english ? `🇮🇳 *₹29* · 🌍 *150 Stars*` : `⭐ *150 Stars/month*`} — tap below 👇`,
         {
           parse_mode: "MarkdownV2",
           disable_web_page_preview: true,
-          reply_markup: getPaymentKeyboard(paymentLink, indian),
+          reply_markup: getPaymentKeyboard(paymentLink, indian, english),
         }
       );
       return;
@@ -1615,15 +1666,18 @@ bot.on("callback_query", async (query) => {
       await bot.answerCallbackQuery(query.id);
       const paymentLink = await createPaymentLink(user);
       const indian      = isIndianUser(user);
+      const english     = isEnglishUser(user);
       await bot.sendMessage(
         chatId,
         indian
           ? `⭐ *VidVault Premium — ₹29/month*\n\n✅ Unlimited downloads\n✅ 4K \\+ 1080p quality\n✅ Activates in seconds\n\n~₹99~ *₹29/month* — less than one chai ☕`
-          : `⭐ *VidVault Premium — 150 Stars/month*\n\n✅ Unlimited downloads\n✅ 4K \\+ 1080p quality\n✅ Activates in seconds\n✅ Trusted in 50\\+ countries\n\n⭐ *150 Stars* — less than a coffee ☕`,
+          : english
+          ? `⭐ *VidVault Premium*\n\n✅ Unlimited downloads\n✅ 4K \\+ 1080p quality\n✅ Activates in seconds\n\n🇮🇳 *₹29/month* \\(India\\) · 🌍 *150 Stars* \\(International\\)`
+          : `⭐ *VidVault Premium — 150 Stars/month*\n\n✅ Unlimited downloads\n✅ 4K \\+ 1080p quality\n✅ Activates in seconds\n\n⭐ *150 Stars* — less than a coffee ☕`,
         {
           parse_mode: "MarkdownV2",
           disable_web_page_preview: true,
-          reply_markup: getPaymentKeyboard(paymentLink, indian),
+          reply_markup: getPaymentKeyboard(paymentLink, indian, english),
         }
       );
       return;
@@ -1765,6 +1819,7 @@ async function handleDownload(chatId, user, url, params) {
     const days        = daysUntilReset(user.monthResetDate);
     const paymentLink = await createPaymentLink(user);
     const indian      = isIndianUser(user);
+    const english     = isEnglishUser(user);
     await bot.sendMessage(
       chatId,
       `⚠️ *Monthly limit reached\\!*\n\n` +
@@ -1773,7 +1828,7 @@ async function handleDownload(chatId, user, url, params) {
       {
         parse_mode: "MarkdownV2",
         disable_web_page_preview: true,
-        reply_markup: getPaymentKeyboard(paymentLink, indian),
+        reply_markup: getPaymentKeyboard(paymentLink, indian, english),
       }
     );
     return;
