@@ -30,6 +30,10 @@ function apiKeyAuth(req, res, next) {
   const proxySecret = req.headers["x-rapidapi-proxy-secret"];
   const apiKey = req.headers["x-api-key"];
   const validSecret = process.env.RAPIDAPI_PROXY_SECRET;
+  const internalToken = process.env.INTERNAL_API_SECRET;
+
+  // Own frontend — server-to-server secret set in Next.js env, never exposed client-side
+  if (internalToken && req.headers["x-internal-token"] === internalToken) return next();
 
   // Paid callers — RapidAPI proxy or direct API key
   if (proxySecret && validSecret && proxySecret === validSecret) return next();
