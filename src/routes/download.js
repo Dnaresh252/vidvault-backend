@@ -1,7 +1,6 @@
 const express = require("express");
 const downloadController = require("../controllers/downloadController");
 const { downloadLimiter, apiLimiter } = require("../middleware/rateLimiting");
-const apiKeyAuth = require("../middleware/apiKeyAuth");
 const rateLimit = require("express-rate-limit");
 const router = express.Router();
 
@@ -17,13 +16,11 @@ const router = express.Router();
  */
 router.get(
   "/video-progress",
-  apiKeyAuth,
   downloadLimiter,
   downloadController.downloadVideoWithProgress,
 );
 router.post(
   "/video-progress",
-  apiKeyAuth,
   downloadLimiter,
   downloadController.downloadVideoWithProgress,
 );
@@ -33,7 +30,7 @@ router.post(
  * POST /api/v1/download/video
  * Body: { url, quality, format, audioOnly, includeThumbnail }
  */
-router.post("/video", apiKeyAuth, downloadLimiter, downloadController.downloadVideo);
+router.post("/video", downloadLimiter, downloadController.downloadVideo);
 
 // ==================== METADATA ====================
 
@@ -41,7 +38,7 @@ router.post("/video", apiKeyAuth, downloadLimiter, downloadController.downloadVi
  * 📋 GET VIDEO METADATA (with cache)
  * POST /api/v1/download/metadata
  */
-router.post("/metadata", apiKeyAuth, apiLimiter, downloadController.getVideoMetadata);
+router.post("/metadata", apiLimiter, downloadController.getVideoMetadata);
 
 // ==================== THUMBNAILS ====================
 
@@ -51,7 +48,6 @@ router.post("/metadata", apiKeyAuth, apiLimiter, downloadController.getVideoMeta
  */
 router.post(
   "/thumbnail-only",
-  apiKeyAuth,
   apiLimiter,
   downloadController.downloadThumbnailOnly,
 );
