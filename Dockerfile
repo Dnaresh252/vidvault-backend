@@ -23,6 +23,7 @@ RUN echo "Installing yt-dlp - Build: $CACHEBUST" && \
     yt-dlp --version
 
 RUN pip install --no-cache-dir curl-cffi
+RUN pip install --no-cache-dir yt-dlp-ejs
 RUN pip install --no-cache-dir bgutil-ytdlp-pot-provider
 RUN pip install --no-cache-dir gallery-dl
 RUN gallery-dl --version
