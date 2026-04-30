@@ -23,7 +23,7 @@ RUN echo "Installing yt-dlp - Build: $CACHEBUST" && \
     yt-dlp --version
 
 RUN pip install --no-cache-dir curl-cffi
-RUN pip install --no-cache-dir yt-dlp-ejs
+RUN pip install --no-cache-dir bgutil-ytdlp-pot-provider
 RUN pip install --no-cache-dir gallery-dl
 RUN gallery-dl --version
 
@@ -32,7 +32,7 @@ RUN echo "--js-runtimes node:/usr/local/bin/node" > /etc/yt-dlp.conf
 
 # Verify node is accessible
 RUN node --version && yt-dlp --version
-
+ARG CACHEBUST=20260430-pottoken
 WORKDIR /app
 
 COPY package*.json ./
