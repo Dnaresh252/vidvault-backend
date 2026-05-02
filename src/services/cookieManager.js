@@ -34,12 +34,22 @@ class CookieManager {
       facebook: path.join(this.cookieDir, "facebook_cookies.txt"),
     };
 
+    // ── Instagram cookie rotation ────────────────────────────────────────────
+    // Pool of cookie files. We track which is active and rotate on auth failure.
+    this.igPool = [
+      path.join(this.cookieDir, "instagram_cookies_1.txt"),
+      path.join(this.cookieDir, "instagram_cookies_2.txt"),
+    ];
+    this.igActiveIndex = 0;   // 0 = cookie 1, 1 = cookie 2
+    this.igBothFailed = false; // true after both have auth-failed in same window
+
     // State tracking
     this.cookieStatus = {};
     this.initialized = false;
 
     // Initialize all platforms
     this.initializeSync();
+    this.initInstagramRotation();
   }
 
   /**
@@ -235,15 +245,120 @@ class CookieManager {
       return false;
     }
 
-    const cookieFile = this.cookieFiles[platform];
+    // Instagram uses the rotation pool; all other platforms use the static file.
+    const cookieFile =
+      platform === "instagram"
+        ? this.getActiveInstagramCookiePath()
+        : this.cookieFiles[platform];
+
     if (!fs.existsSync(cookieFile)) {
+      // Instagram fallback: try the legacy active file before giving up
+      if (platform === "instagram") {
+        const legacy = this.cookieFiles.instagram;
+        if (fs.existsSync(legacy)) {
+          optionsArray.push("--cookies", legacy);
+          console.log(`🍪 [INSTAGRAM] Using legacy cookie file (pool file missing)`);
+          return true;
+        }
+      }
       console.log(`⚠️  [${platform.toUpperCase()}] Cookie file missing`);
       return false;
     }
 
     optionsArray.push("--cookies", cookieFile);
-    console.log(`🍪 [${platform.toUpperCase()}] Using authenticated cookies`);
+    console.log(
+      platform === "instagram"
+        ? `🍪 [INSTAGRAM] Using cookie ${this.igActiveIndex + 1} (${cookieFile})`
+        : `🍪 [${platform.toUpperCase()}] Using authenticated cookies`,
+    );
     return true;
+  }
+
+  /**
+   * ═══════════════════════════════════════════════════════════
+   * INSTAGRAM COOKIE ROTATION
+   * ═══════════════════════════════════════════════════════════
+   */
+  initInstagramRotation() {
+    this.igPool.forEach((file, i) => {
+      const exists = fs.existsSync(file);
+      console.log(
+        `${exists ? "✅" : "⚠️ "} Instagram cookie ${i + 1}: ${exists ? "found" : "NOT found"} (${file})`,
+      );
+    });
+
+    // Reset to cookie 1 every 24 hours to distribute load evenly
+    setInterval(() => {
+      const prev = this.igActiveIndex;
+      this.igActiveIndex = 0;
+      this.igBothFailed = false;
+      if (prev !== 0) {
+        console.log("🔄 [INSTAGRAM] 24h reset — switched back to cookie 1");
+      }
+    }, 24 * 60 * 60 * 1000);
+  }
+
+  getActiveInstagramCookiePath() {
+    return this.igPool[this.igActiveIndex];
+  }
+
+  // Called by videoDownloader when an auth error is detected.
+  // Returns { switched, allFailed, newIndex }.
+  async switchInstagramCookie() {
+    if (this.igBothFailed) {
+      return { switched: false, allFailed: true, newIndex: this.igActiveIndex };
+    }
+
+    const nextIndex = (this.igActiveIndex + 1) % this.igPool.length;
+    const nextFile = this.igPool[nextIndex];
+
+    if (!fs.existsSync(nextFile)) {
+      this.igBothFailed = true;
+      console.log(`❌ [INSTAGRAM] Cookie ${nextIndex + 1} missing — all cookies exhausted`);
+      return { switched: false, allFailed: true, newIndex: nextIndex };
+    }
+
+    this.igActiveIndex = nextIndex;
+    this.igBothFailed = false;
+    console.log(`🔄 [INSTAGRAM] Rotated to cookie ${nextIndex + 1}: ${nextFile}`);
+    return { switched: true, allFailed: false, newIndex: nextIndex };
+  }
+
+  // Fires a Telegram message to TELEGRAM_ADMIN_ID when all cookies have failed.
+  async notifyAllCookiesExpired() {
+    this.igBothFailed = true;
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    const adminId = process.env.TELEGRAM_ADMIN_ID;
+
+    console.error("🚨 [INSTAGRAM] ALL cookies expired! Telegram alert sending...");
+
+    if (!botToken || !adminId) {
+      console.error("🚨 [INSTAGRAM] No Telegram credentials — alert skipped");
+      return;
+    }
+
+    try {
+      const body = JSON.stringify({
+        chat_id: adminId,
+        text:
+          "🚨 *All Instagram cookies expired\\!*\n\n" +
+          "Both cookie files have failed auth\\.\n" +
+          "Please update immediately:\n\n" +
+          "• `instagram_cookies_1\\.txt`\n" +
+          "• `instagram_cookies_2\\.txt`\n\n" +
+          "Then redeploy the backend\\.",
+        parse_mode: "MarkdownV2",
+      });
+
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      console.log("🚨 [INSTAGRAM] Telegram alert sent");
+    } catch (e) {
+      console.error("🚨 [INSTAGRAM] Telegram alert failed:", e.message);
+    }
   }
 
   /**

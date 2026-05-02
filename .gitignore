@@ -7,5 +7,14 @@ temp/
 *.log
 npm-debug.log*
 .DS_Store
-cookies/
+# Ignore cookie directory by default — only whitelist specific files needed by Dockerfile
+cookies/*
+!cookies/instagram_cookies.txt
+!cookies/instagram_cookies_1.txt
+!cookies/instagram_cookies_2.txt
+!cookies/youtube_cookies.txt
+!cookies/tiktok_cookies.txt
+!cookies/twitter_cookies.txt
+!cookies/facebook_cookies.txt
 *.txt
+!cookies/*.txt

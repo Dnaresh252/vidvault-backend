@@ -49,8 +49,12 @@ RUN mkdir -p /tmp/downloads /tmp/temp /tmp/ig-images /tmp/cookies && \
 
 COPY cookies/youtube_cookies.txt /tmp/cookies/youtube_cookies.txt
 COPY cookies/instagram_cookies.txt /tmp/cookies/instagram_cookies.txt
+COPY cookies/instagram_cookies_1.txt /tmp/cookies/instagram_cookies_1.txt
+COPY cookies/instagram_cookies_2.txt /tmp/cookies/instagram_cookies_2.txt
 RUN chmod 666 /tmp/cookies/youtube_cookies.txt && \
-    chmod 666 /tmp/cookies/instagram_cookies.txt
+    chmod 666 /tmp/cookies/instagram_cookies.txt && \
+    chmod 666 /tmp/cookies/instagram_cookies_1.txt && \
+    chmod 666 /tmp/cookies/instagram_cookies_2.txt
 
 USER node
 

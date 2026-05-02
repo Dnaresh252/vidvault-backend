@@ -25,6 +25,28 @@ dns.setServers(["8.8.8.8", "1.1.1.1"]);
 const resolver = new Resolver();
 resolver.setServers(["8.8.8.8", "1.1.1.1"]);
 
+// ── Instagram auth-error patterns ───────────────────────────────────────────
+// yt-dlp writes these to stderr when the session cookie is expired or invalid.
+const INSTAGRAM_AUTH_PATTERNS = [
+  "login_required",
+  "checkpoint_required",
+  "HTTP Error 401",
+  "401 Client Error",
+  "login and try again",
+  "Please log in",
+  "not-authorized",
+  "Sorry, this page isn",
+  "This content isn",
+  "cookies expired",
+  "sessionid",
+  "Please wait a few minutes before you try again",
+];
+
+function isInstagramAuthError(stderr) {
+  const lower = stderr.toLowerCase();
+  return INSTAGRAM_AUTH_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+}
+
 // 🔥 CONSTANTS FOR PREMIUM SERVICE
 const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB hard limit
 const RECOMMENDED_QUALITY = "medium"; // 720p default
@@ -445,19 +467,35 @@ class VideoDownloaderService {
 
     console.log(`☁️ [${downloadId}] Downloading and uploading to R2...`);
 
-    const result = await this.streamDirectlyToR2(
-      {
-        url,
-        quality,
-        format,
-        audioOnly,
-        fileName,
-        contentType,
-        downloadId,
-        platform,
-      },
-      progressCallback,
-    );
+    const r2Options = { url, quality, format, audioOnly, fileName, contentType, downloadId, platform };
+
+    let result;
+    try {
+      result = await this.streamDirectlyToR2(r2Options, progressCallback);
+    } catch (err) {
+      if (err.code === "INSTAGRAM_AUTH") {
+        console.log(`🔄 [${downloadId}] Instagram auth error — rotating cookie...`);
+        const rotation = await cookieManager.switchInstagramCookie();
+
+        if (rotation.allFailed) {
+          await cookieManager.notifyAllCookiesExpired();
+          throw new Error("Instagram authentication failed. Please try again later.");
+        }
+
+        console.log(`🔄 [${downloadId}] Retrying with Instagram cookie ${rotation.newIndex + 1}...`);
+        try {
+          result = await this.streamDirectlyToR2(r2Options, progressCallback);
+        } catch (retryErr) {
+          if (retryErr.code === "INSTAGRAM_AUTH") {
+            await cookieManager.notifyAllCookiesExpired();
+            throw new Error("Instagram authentication failed. Please try again later.");
+          }
+          throw retryErr;
+        }
+      } else {
+        throw err;
+      }
+    }
 
     console.log(`✓ [${downloadId}] R2 upload completed`);
     return result;
@@ -719,13 +757,26 @@ class VideoDownloaderService {
           }
         });
 
+        let stderrBuffer = "";
         ytDlpProcess.stderr.on("data", (data) => {
-          console.log(`yt-dlp: ${data.toString()}`);
+          const text = data.toString();
+          stderrBuffer += text;
+          console.log(`yt-dlp: ${text}`);
         });
 
         ytDlpProcess.on("close", (code) => {
-          if (code === 0) resolve();
-          else reject(new Error("Download failed"));
+          if (code === 0) {
+            resolve();
+          } else if (
+            (platform === "instagram" || platform === "threads") &&
+            isInstagramAuthError(stderrBuffer)
+          ) {
+            const authErr = new Error("Instagram cookie authentication failed");
+            authErr.code = "INSTAGRAM_AUTH";
+            reject(authErr);
+          } else {
+            reject(new Error("Download failed"));
+          }
         });
 
         ytDlpProcess.on("error", (error) => {
