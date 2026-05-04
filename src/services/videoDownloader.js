@@ -70,6 +70,7 @@ class VideoDownloaderService {
 
     this.activeDownloads = new Map();
     this.maxConcurrentDownloads = 25;
+    this.youtubeLastDownloadByIP = new Map();
 
     this.ensureDirectories();
     this.testDNSResolution();
@@ -331,6 +332,30 @@ class VideoDownloaderService {
 
       // 🔥 STEP 2: Cache miss - proceed with download
       console.log(`📥 [${downloadId}] Cache miss - downloading fresh...`);
+
+      // Stagger consecutive YouTube downloads from the same IP (2-5s)
+      // to avoid triggering YouTube's rate limiting on the server's IP.
+      if (detection.platform === "youtube" && userIP) {
+        const lastTime = this.youtubeLastDownloadByIP.get(userIP);
+        if (lastTime) {
+          const elapsed = Date.now() - lastTime;
+          const minGap = 2000 + Math.random() * 3000; // 2–5 seconds
+          if (elapsed < minGap) {
+            const wait = Math.ceil(minGap - elapsed);
+            console.log(`⏳ [${downloadId}] YouTube delay ${wait}ms for IP ${userIP}`);
+            await new Promise((resolve) => setTimeout(resolve, wait));
+          }
+        }
+        this.youtubeLastDownloadByIP.set(userIP, Date.now());
+
+        // Prune entries older than 10 minutes to prevent unbounded growth
+        if (this.youtubeLastDownloadByIP.size > 1000) {
+          const cutoff = Date.now() - 10 * 60 * 1000;
+          for (const [ip, ts] of this.youtubeLastDownloadByIP) {
+            if (ts < cutoff) this.youtubeLastDownloadByIP.delete(ip);
+          }
+        }
+      }
 
       let metadata;
       try {
