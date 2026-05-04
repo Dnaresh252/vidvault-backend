@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir gallery-dl
 RUN gallery-dl --version
 
 # Enterprise fix: hardcode node path so yt-dlp NEVER fails JS challenge
-RUN echo "--js-runtimes node:/usr/local/bin/node" > /etc/yt-dlp.conf
+RUN printf "--js-runtimes node:/usr/local/bin/node\n--sleep-requests 3\n--sleep-interval 2\n--max-sleep-interval 5\n" > /etc/yt-dlp.conf
 
 # Verify node is accessible
 RUN node --version && yt-dlp --version
