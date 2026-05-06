@@ -34,7 +34,7 @@ RUN printf "--js-runtimes node:/usr/local/bin/node\n--sleep-requests 3\n--sleep-
 
 # Verify node is accessible
 RUN node --version && yt-dlp --version
-ARG CACHEBUST=20260430-pottoken
+ARG CACHEBUST=20260506-sleep-fix
 WORKDIR /app
 
 COPY package*.json ./
