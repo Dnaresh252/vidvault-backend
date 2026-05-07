@@ -49,6 +49,7 @@ class CookieManager {
     ];
     this.ytActiveIndex = 0;
     this.ytBothFailed = false;
+    this.lastYouTubeAlertTime = 0; // epoch ms — throttle Telegram alerts to 1 per 30min
 
     // State tracking
     this.cookieStatus = {};
@@ -426,6 +427,15 @@ class CookieManager {
 
   async notifyAllYouTubeCookiesRateLimited() {
     this.ytBothFailed = true;
+
+    const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+    const now = Date.now();
+    if (now - this.lastYouTubeAlertTime < COOLDOWN_MS) {
+      console.log(`🚨 [YOUTUBE] Both accounts rate limited (alert suppressed — cooldown active)`);
+      return;
+    }
+    this.lastYouTubeAlertTime = now;
+
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
     const adminId = process.env.TELEGRAM_ADMIN_ID;
 
