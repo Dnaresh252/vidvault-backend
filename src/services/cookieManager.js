@@ -35,13 +35,20 @@ class CookieManager {
     };
 
     // ── Instagram cookie rotation ────────────────────────────────────────────
-    // Pool of cookie files. We track which is active and rotate on auth failure.
     this.igPool = [
       path.join(this.cookieDir, "instagram_cookies_1.txt"),
       path.join(this.cookieDir, "instagram_cookies_2.txt"),
     ];
-    this.igActiveIndex = 0;   // 0 = cookie 1, 1 = cookie 2
-    this.igBothFailed = false; // true after both have auth-failed in same window
+    this.igActiveIndex = 0;
+    this.igBothFailed = false;
+
+    // ── YouTube cookie rotation ──────────────────────────────────────────────
+    this.ytPool = [
+      path.join(this.cookieDir, "youtube_cookies.txt"),
+      path.join(this.cookieDir, "youtube_cookies_2.txt"),
+    ];
+    this.ytActiveIndex = 0;
+    this.ytBothFailed = false;
 
     // State tracking
     this.cookieStatus = {};
@@ -50,6 +57,7 @@ class CookieManager {
     // Initialize all platforms
     this.initializeSync();
     this.initInstagramRotation();
+    this.initYouTubeRotation();
   }
 
   /**
@@ -245,14 +253,17 @@ class CookieManager {
       return false;
     }
 
-    // Instagram uses the rotation pool; all other platforms use the static file.
-    const cookieFile =
-      platform === "instagram"
-        ? this.getActiveInstagramCookiePath()
-        : this.cookieFiles[platform];
+    // Instagram and YouTube use rotation pools; all other platforms use static file.
+    let cookieFile;
+    if (platform === "instagram") {
+      cookieFile = this.getActiveInstagramCookiePath();
+    } else if (platform === "youtube") {
+      cookieFile = this.getActiveYouTubeCookiePath();
+    } else {
+      cookieFile = this.cookieFiles[platform];
+    }
 
     if (!fs.existsSync(cookieFile)) {
-      // Instagram fallback: try the legacy active file before giving up
       if (platform === "instagram") {
         const legacy = this.cookieFiles.instagram;
         if (fs.existsSync(legacy)) {
@@ -266,11 +277,13 @@ class CookieManager {
     }
 
     optionsArray.push("--cookies", cookieFile);
-    console.log(
-      platform === "instagram"
-        ? `🍪 [INSTAGRAM] Using cookie ${this.igActiveIndex + 1} (${cookieFile})`
-        : `🍪 [${platform.toUpperCase()}] Using authenticated cookies`,
-    );
+    if (platform === "instagram") {
+      console.log(`🍪 [INSTAGRAM] Using cookie ${this.igActiveIndex + 1} (${cookieFile})`);
+    } else if (platform === "youtube") {
+      console.log(`🍪 [YOUTUBE] Using cookie ${this.ytActiveIndex + 1} (${cookieFile})`);
+    } else {
+      console.log(`🍪 [${platform.toUpperCase()}] Using authenticated cookies`);
+    }
     return true;
   }
 
@@ -358,6 +371,91 @@ class CookieManager {
       console.log("🚨 [INSTAGRAM] Telegram alert sent");
     } catch (e) {
       console.error("🚨 [INSTAGRAM] Telegram alert failed:", e.message);
+    }
+  }
+
+  /**
+   * ═══════════════════════════════════════════════════════════
+   * YOUTUBE COOKIE ROTATION
+   * ═══════════════════════════════════════════════════════════
+   */
+  initYouTubeRotation() {
+    this.ytPool.forEach((file, i) => {
+      const exists = fs.existsSync(file);
+      console.log(
+        `${exists ? "✅" : "⚠️ "} YouTube cookie ${i + 1}: ${exists ? "found" : "NOT found"} (${file})`,
+      );
+    });
+
+    // Reset to cookie 1 every 1 hour so rate-limit window clears
+    setInterval(() => {
+      const prev = this.ytActiveIndex;
+      this.ytActiveIndex = 0;
+      this.ytBothFailed = false;
+      if (prev !== 0) {
+        console.log("🔄 [YOUTUBE] 1h reset — switched back to cookie 1");
+      } else {
+        console.log("🔄 [YOUTUBE] 1h reset — cookie 1 still active");
+      }
+    }, 60 * 60 * 1000);
+  }
+
+  getActiveYouTubeCookiePath() {
+    return this.ytPool[this.ytActiveIndex];
+  }
+
+  async switchYouTubeCookie() {
+    if (this.ytBothFailed) {
+      return { switched: false, allFailed: true, newIndex: this.ytActiveIndex };
+    }
+
+    const nextIndex = (this.ytActiveIndex + 1) % this.ytPool.length;
+    const nextFile = this.ytPool[nextIndex];
+
+    if (!fs.existsSync(nextFile)) {
+      this.ytBothFailed = true;
+      console.log(`❌ [YOUTUBE] Cookie ${nextIndex + 1} missing — all cookies exhausted`);
+      return { switched: false, allFailed: true, newIndex: nextIndex };
+    }
+
+    this.ytActiveIndex = nextIndex;
+    this.ytBothFailed = false;
+    console.log(`🔄 [YOUTUBE] Rotated to cookie ${nextIndex + 1}: ${nextFile}`);
+    return { switched: true, allFailed: false, newIndex: nextIndex };
+  }
+
+  async notifyAllYouTubeCookiesRateLimited() {
+    this.ytBothFailed = true;
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    const adminId = process.env.TELEGRAM_ADMIN_ID;
+
+    console.error("🚨 [YOUTUBE] BOTH accounts rate limited! Telegram alert sending...");
+
+    if (!botToken || !adminId) {
+      console.error("🚨 [YOUTUBE] No Telegram credentials — alert skipped");
+      return;
+    }
+
+    try {
+      const body = JSON.stringify({
+        chat_id: adminId,
+        text:
+          "🚨 Both YouTube accounts rate limited\\!\n\n" +
+          "Please wait 1 hour or add more accounts\\.\n\n" +
+          "• youtube\\_cookies\\.txt — rate limited\n" +
+          "• youtube\\_cookies\\_2\\.txt — rate limited\n\n" +
+          "Auto\\-reset in 1 hour\\.",
+        parse_mode: "MarkdownV2",
+      });
+
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      console.log("🚨 [YOUTUBE] Telegram alert sent");
+    } catch (e) {
+      console.error("🚨 [YOUTUBE] Telegram alert failed:", e.message);
     }
   }
 

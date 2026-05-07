@@ -26,7 +26,6 @@ const resolver = new Resolver();
 resolver.setServers(["8.8.8.8", "1.1.1.1"]);
 
 // ── Instagram auth-error patterns ───────────────────────────────────────────
-// yt-dlp writes these to stderr when the session cookie is expired or invalid.
 const INSTAGRAM_AUTH_PATTERNS = [
   "login_required",
   "checkpoint_required",
@@ -45,6 +44,28 @@ const INSTAGRAM_AUTH_PATTERNS = [
 function isInstagramAuthError(stderr) {
   const lower = stderr.toLowerCase();
   return INSTAGRAM_AUTH_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+}
+
+// ── YouTube rate-limit patterns ──────────────────────────────────────────────
+// yt-dlp writes these to stderr when YouTube detects bot-like activity or the
+// cookie account has been rate-limited.
+const YOUTUBE_RATELIMIT_PATTERNS = [
+  "Sign in to confirm",
+  "confirm you're not a bot",
+  "confirm that you're not a bot",
+  "HTTP Error 429",
+  "429 Too Many Requests",
+  "rate-limited",
+  "ratelimited",
+  "Too many requests",
+  "unusual traffic",
+  "This helps protect our community",
+  "bot traffic",
+];
+
+function isYouTubeRateLimited(stderr) {
+  const lower = stderr.toLowerCase();
+  return YOUTUBE_RATELIMIT_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
 }
 
 // 🔥 CONSTANTS FOR PREMIUM SERVICE
@@ -517,6 +538,25 @@ class VideoDownloaderService {
           }
           throw retryErr;
         }
+      } else if (err.code === "YOUTUBE_RATE_LIMITED") {
+        console.log(`🔄 [${downloadId}] YouTube rate limited — rotating cookie...`);
+        const rotation = await cookieManager.switchYouTubeCookie();
+
+        if (rotation.allFailed) {
+          await cookieManager.notifyAllYouTubeCookiesRateLimited();
+          throw new Error("YouTube is temporarily rate limiting our servers. Please try again in 1 hour.");
+        }
+
+        console.log(`🔄 [${downloadId}] Retrying with YouTube cookie ${rotation.newIndex + 1}...`);
+        try {
+          result = await this.streamDirectlyToR2(r2Options, progressCallback);
+        } catch (retryErr) {
+          if (retryErr.code === "YOUTUBE_RATE_LIMITED") {
+            await cookieManager.notifyAllYouTubeCookiesRateLimited();
+            throw new Error("YouTube is temporarily rate limiting our servers. Please try again in 1 hour.");
+          }
+          throw retryErr;
+        }
       } else {
         throw err;
       }
@@ -799,6 +839,10 @@ class VideoDownloaderService {
             const authErr = new Error("Instagram cookie authentication failed");
             authErr.code = "INSTAGRAM_AUTH";
             reject(authErr);
+          } else if (platform === "youtube" && isYouTubeRateLimited(stderrBuffer)) {
+            const rateLimitErr = new Error("YouTube rate limited");
+            rateLimitErr.code = "YOUTUBE_RATE_LIMITED";
+            reject(rateLimitErr);
           } else {
             reject(new Error("Download failed"));
           }

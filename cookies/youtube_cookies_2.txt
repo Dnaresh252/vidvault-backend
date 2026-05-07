@@ -1,0 +1,4 @@
+# Netscape HTTP Cookie File
+# Replace this file with actual YouTube cookies exported from account 2
+# Use the "Get cookies.txt LOCALLY" browser extension
+# Required cookies: __Secure-1PSID, __Secure-3PSID, SID
