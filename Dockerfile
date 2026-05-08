@@ -1,6 +1,6 @@
 # Force rebuild - Python 3.9 compatible
 FROM node:20-slim
-ARG CACHEBUST=20260316-final
+ARG CACHEBUST=20260508-nopuppeteer
 
 RUN apt-get update && apt-get install -y \
     python3 \
@@ -25,7 +25,6 @@ RUN echo "Installing yt-dlp - Build: $CACHEBUST" && \
 RUN pip install --no-cache-dir curl-cffi
 RUN pip install --no-cache-dir yt-dlp-ejs
 RUN pip install --no-cache-dir bgutil-ytdlp-pot-provider
-RUN npm install -g puppeteer
 RUN pip install --no-cache-dir gallery-dl
 RUN gallery-dl --version
 
