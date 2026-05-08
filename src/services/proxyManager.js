@@ -1,44 +1,84 @@
 "use strict";
+const axios = require("axios");
 
-const PROXY_IPS = [
-  "31.59.20.176:6754",
-  "92.113.242.158:6742",
-  "198.23.239.134:6540",
-  "45.38.107.97:6014",
-  "107.172.163.27:6543",
-  "216.10.27.159:6837",
-  "142.111.67.146:5611",
-  "191.96.254.138:6185",
-  "31.58.9.4:6077",
-  "23.229.19.94:8689",
-];
+const WEBSHARE_API =
+  "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page=1&page_size=100";
+const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1_000; // 24 hours
 
 class ProxyManager {
   constructor() {
     this.proxies = new Map(); // url -> { url, score, lastUsed, cooldownUntil, retired }
+    this.refreshTimer = null;
   }
 
-  startRefreshing() {
-    const user = process.env.WEBSHARE_PROXY_USER;
-    const pass = process.env.WEBSHARE_PROXY_PASS;
+  async _fetchFromAPI() {
+    const apiKey = process.env.WEBSHARE_API_KEY;
+    if (!apiKey) {
+      console.warn("[ProxyManager] WEBSHARE_API_KEY not set — skipping fetch");
+      return [];
+    }
 
-    if (!user || !pass) {
-      console.warn("[ProxyManager] WEBSHARE_PROXY_USER/PASS not set — proxy rotation disabled");
+    const res = await axios.get(WEBSHARE_API, {
+      headers: { Authorization: `Token ${apiKey}` },
+      timeout: 15_000,
+    });
+
+    return res.data.results.map(
+      ({ proxy_address, port, username, password }) =>
+        `http://${username}:${password}@${proxy_address}:${port}`
+    );
+  }
+
+  async _loadProxies() {
+    let urls;
+    try {
+      urls = await this._fetchFromAPI();
+    } catch (e) {
+      console.error(`[ProxyManager] API fetch failed — keeping existing pool (${this.proxies.size} proxies): ${e.message}`);
       return;
     }
 
-    for (const ipPort of PROXY_IPS) {
-      const url = `http://${user}:${pass}@${ipPort}`;
-      this.proxies.set(url, {
-        url,
-        score: 100,
-        lastUsed: 0,
-        cooldownUntil: 0,
-        retired: false,
-      });
+    if (urls.length === 0) {
+      console.warn("[ProxyManager] API returned 0 proxies — keeping existing pool");
+      return;
     }
 
-    console.log(`✅ ProxyManager: ${this.proxies.size} Webshare proxies loaded`);
+    // Add new proxies at full health; preserve scores for ones already in pool
+    const urlSet = new Set(urls);
+    let added = 0;
+    for (const url of urls) {
+      if (!this.proxies.has(url)) {
+        this.proxies.set(url, {
+          url,
+          score: 100,
+          lastUsed: 0,
+          cooldownUntil: 0,
+          retired: false,
+        });
+        added++;
+      }
+    }
+
+    // Remove proxies no longer returned by the API
+    for (const url of this.proxies.keys()) {
+      if (!urlSet.has(url)) this.proxies.delete(url);
+    }
+
+    console.log(`✅ ProxyManager: ${this.proxies.size} proxies loaded (+${added} new from API)`);
+  }
+
+  startRefreshing() {
+    this._loadProxies().catch((e) =>
+      console.error("[ProxyManager] Initial load error:", e.message)
+    );
+    this.refreshTimer = setInterval(
+      () =>
+        this._loadProxies().catch((e) =>
+          console.error("[ProxyManager] Refresh error:", e.message)
+        ),
+      REFRESH_INTERVAL_MS
+    );
+    console.log("✅ ProxyManager: Webshare API refresh every 24 h");
   }
 
   // Returns the least-recently-used healthy proxy URL, or null for direct connection.
