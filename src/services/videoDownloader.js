@@ -858,7 +858,6 @@ class VideoDownloaderService {
       contentType,
       downloadId,
       platform,
-      proxy = null,
     } = options;
 
     const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
@@ -872,10 +871,6 @@ class VideoDownloaderService {
       });
 
       ytDlpArgs.push("-o", tempFile);
-
-      if (proxy) {
-        ytDlpArgs.push("--proxy", proxy);
-      }
 
       console.log(`⬇️ [${downloadId}] Downloading and merging audio+video...`);
 
@@ -928,14 +923,6 @@ class VideoDownloaderService {
         ytDlpProcess.on("close", (code) => {
           if (code === 0) {
             resolve();
-          } else if (proxy && isProxyConnError(stderrBuffer)) {
-            const connErr = new Error("Proxy connection failed");
-            connErr.code = "PROXY_CONN_ERR";
-            reject(connErr);
-          } else if (proxy && isProxyHttpBlocked(stderrBuffer)) {
-            const proxyErr = new Error("Proxy blocked by target");
-            proxyErr.code = stderrBuffer.includes("403") ? "PROXY_403" : "PROXY_429";
-            reject(proxyErr);
           } else if (
             (platform === "instagram" || platform === "threads") &&
             isInstagramAuthError(stderrBuffer)
