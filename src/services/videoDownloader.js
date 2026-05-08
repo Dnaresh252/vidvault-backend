@@ -590,36 +590,71 @@ class VideoDownloaderService {
     return result;
   }
 
-  // Tries proxy once if available, then immediately falls back to direct (WARP).
-  // Proxies are enhancement only — direct is always the reliable fallback.
-  // Throws non-proxy errors (INSTAGRAM_AUTH, YOUTUBE_RATE_LIMITED) for the caller to handle.
+  // Phase 1: lightweight --skip-download info-check via proxy (no bandwidth cost).
+  // Phase 2: actual video download always uses direct connection — proxies cannot
+  //          handle 50-500MB files without exhausting bandwidth instantly.
   async _tryWithProxies(r2Options, progressCallback, downloadId) {
-    const attempt = (proxy) =>
-      this.streamDirectlyToR2({ ...r2Options, proxy }, progressCallback);
+    const { url, platform } = r2Options;
 
-    const proxy = proxyManager.getBestProxy();
-
-    if (proxy) {
-      console.log(`🔀 [${downloadId}] Trying proxy ${proxy}`);
-      try {
-        const result = await attempt(proxy);
-        proxyManager.recordResult(proxy, true);
-        return result;
-      } catch (err) {
-        if (err.code === "PROXY_CONN_ERR") {
-          proxyManager.recordResult(proxy, false, "500");
-          console.log(`🔀 [${downloadId}] Proxy unreachable — going direct`);
-        } else if (err.code === "PROXY_403" || err.code === "PROXY_429") {
-          proxyManager.recordResult(proxy, false, err.code.slice(6));
-          console.log(`🔀 [${downloadId}] Proxy blocked (${err.code}) — going direct`);
-        } else {
-          throw err; // INSTAGRAM_AUTH, YOUTUBE_RATE_LIMITED, generic — let caller handle
+    // Info-extraction pre-check through proxy (YouTube only — updates health scores
+    // without touching video bandwidth).
+    if (platform === "youtube") {
+      const proxy = proxyManager.getBestProxy();
+      if (proxy) {
+        console.log(`🔀 [${downloadId}] Proxy info-check ${proxy}`);
+        try {
+          await this._skipDownloadCheck(url, proxy);
+          proxyManager.recordResult(proxy, true);
+        } catch (err) {
+          if (err.code === "PROXY_CONN_ERR") {
+            proxyManager.recordResult(proxy, false, "500");
+            console.log(`🔀 [${downloadId}] Proxy unreachable (retired)`);
+          } else if (err.code === "PROXY_403" || err.code === "PROXY_429") {
+            proxyManager.recordResult(proxy, false, err.code.slice(6));
+            console.log(`🔀 [${downloadId}] Proxy blocked (${err.code})`);
+          }
+          // Pre-check failure is non-fatal — always proceed to direct download
         }
       }
     }
 
-    // Direct connection — WARP IP is the primary defense
-    return attempt(null);
+    // Actual video download always direct — never through proxy
+    return this.streamDirectlyToR2({ ...r2Options, proxy: null }, progressCallback);
+  }
+
+  // Lightweight yt-dlp --skip-download through a proxy to validate accessibility
+  // and maintain proxy health scores. Resolves in <5s, uses zero video bandwidth.
+  async _skipDownloadCheck(url, proxy) {
+    const { spawn } = require("child_process");
+    return new Promise((resolve, reject) => {
+      const proc = spawn("yt-dlp", [
+        url,
+        "--skip-download",
+        "--no-playlist",
+        "--socket-timeout", "8",
+        "--proxy", proxy,
+        "--extractor-args", "youtube:player_client=web,default",
+      ]);
+      let stderr = "";
+      proc.stderr.on("data", (d) => { stderr += d.toString(); });
+      proc.on("close", (code) => {
+        if (code === 0) return resolve();
+        if (isProxyConnError(stderr)) {
+          const e = new Error("Proxy connection failed");
+          e.code = "PROXY_CONN_ERR";
+          return reject(e);
+        }
+        if (isProxyHttpBlocked(stderr)) {
+          const e = new Error("Proxy blocked");
+          e.code = stderr.includes("403") ? "PROXY_403" : "PROXY_429";
+          return reject(e);
+        }
+        resolve(); // Non-proxy error in pre-check — proceed to direct download
+      });
+      proc.on("error", () => resolve());
+      // Hard cap: kill pre-check after 20s so it never blocks the download
+      setTimeout(() => { proc.kill("SIGTERM"); resolve(); }, 20_000);
+    });
   }
   // ✅ NEW METHOD: Download with progress callback support
   async downloadVideoWithProgress(options = {}) {
