@@ -147,7 +147,10 @@ class ProxyManager {
 
     const code = String(errorCode || "");
     const now = Date.now();
-    if (code.includes("429")) {
+    if (code === "500") {
+      // Connection/tunnel failure — retire immediately, no point retrying
+      proxy.score = 0;
+    } else if (code.includes("429")) {
       proxy.score -= 30;
       proxy.cooldownUntil = now + 15 * 60 * 1_000;
     } else if (code.includes("403")) {

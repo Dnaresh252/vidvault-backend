@@ -78,6 +78,24 @@ function isProxyHttpBlocked(stderr) {
   );
 }
 
+const PROXY_CONN_ERROR_PATTERNS = [
+  "Tunnel connection failed",
+  "Unable to connect to proxy",
+  "Could not connect to proxy",
+  "Cannot connect to proxy",
+  "Failed to connect to proxy",
+  "Proxy connection failed",
+  "ProxyError",
+  "407 Proxy Authentication",
+  "urlopen error timed out",
+  "connection timed out",
+];
+
+function isProxyConnError(stderr) {
+  const lower = stderr.toLowerCase();
+  return PROXY_CONN_ERROR_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+}
+
 // 🔥 CONSTANTS FOR PREMIUM SERVICE
 const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB hard limit
 const RECOMMENDED_QUALITY = "medium"; // 720p default
@@ -572,39 +590,35 @@ class VideoDownloaderService {
     return result;
   }
 
-  // Tries the download with up to 2 proxies before falling back to direct connection.
+  // Tries proxy once if available, then immediately falls back to direct (WARP).
+  // Proxies are enhancement only — direct is always the reliable fallback.
   // Throws non-proxy errors (INSTAGRAM_AUTH, YOUTUBE_RATE_LIMITED) for the caller to handle.
   async _tryWithProxies(r2Options, progressCallback, downloadId) {
     const attempt = (proxy) =>
       this.streamDirectlyToR2({ ...r2Options, proxy }, progressCallback);
 
-    let proxy = proxyManager.getBestProxy();
-    if (proxy) console.log(`🔀 [${downloadId}] Using proxy ${proxy}`);
+    const proxy = proxyManager.getBestProxy();
 
-    // First attempt
-    try {
-      const result = await attempt(proxy);
-      if (proxy) proxyManager.recordResult(proxy, true);
-      return result;
-    } catch (err) {
-      if (err.code !== "PROXY_403" && err.code !== "PROXY_429") throw err;
-      proxyManager.recordResult(proxy, false, err.code.slice(6)); // "403" or "429"
+    if (proxy) {
+      console.log(`🔀 [${downloadId}] Trying proxy ${proxy}`);
+      try {
+        const result = await attempt(proxy);
+        proxyManager.recordResult(proxy, true);
+        return result;
+      } catch (err) {
+        if (err.code === "PROXY_CONN_ERR") {
+          proxyManager.recordResult(proxy, false, "500");
+          console.log(`🔀 [${downloadId}] Proxy unreachable — going direct`);
+        } else if (err.code === "PROXY_403" || err.code === "PROXY_429") {
+          proxyManager.recordResult(proxy, false, err.code.slice(6));
+          console.log(`🔀 [${downloadId}] Proxy blocked (${err.code}) — going direct`);
+        } else {
+          throw err; // INSTAGRAM_AUTH, YOUTUBE_RATE_LIMITED, generic — let caller handle
+        }
+      }
     }
 
-    // Second attempt with a different proxy
-    proxy = proxyManager.getBestProxy();
-    console.log(`🔀 [${downloadId}] Proxy retry with ${proxy || "direct"}...`);
-    try {
-      const result = await attempt(proxy);
-      if (proxy) proxyManager.recordResult(proxy, true);
-      return result;
-    } catch (err) {
-      if (err.code !== "PROXY_403" && err.code !== "PROXY_429") throw err;
-      if (proxy) proxyManager.recordResult(proxy, false, err.code.slice(6));
-    }
-
-    // Final fallback: direct connection (WARP or bare IP)
-    console.log(`🔀 [${downloadId}] Direct connection fallback...`);
+    // Direct connection — WARP IP is the primary defense
     return attempt(null);
   }
   // ✅ NEW METHOD: Download with progress callback support
@@ -879,6 +893,10 @@ class VideoDownloaderService {
         ytDlpProcess.on("close", (code) => {
           if (code === 0) {
             resolve();
+          } else if (proxy && isProxyConnError(stderrBuffer)) {
+            const connErr = new Error("Proxy connection failed");
+            connErr.code = "PROXY_CONN_ERR";
+            reject(connErr);
           } else if (proxy && isProxyHttpBlocked(stderrBuffer)) {
             const proxyErr = new Error("Proxy blocked by target");
             proxyErr.code = stderrBuffer.includes("403") ? "PROXY_403" : "PROXY_429";
