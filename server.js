@@ -143,16 +143,6 @@ app.get("/health", async (req, res) => {
   });
 });
 
-// Cookie health endpoint
-app.get("/api/v1/health/cookies", (req, res) => {
-  const { getStatus } = require("./src/services/cookieMonitor");
-  const cookies = getStatus();
-  const allHealthy = Object.values(cookies).every((s) => s.healthy === true);
-  res.status(allHealthy ? 200 : 503).json({
-    status: allHealthy ? "healthy" : "degraded",
-    cookies,
-  });
-});
 
 // Apply rate limiting to all API routes
 app.use("/api/v1", apiLimiter);
@@ -211,7 +201,6 @@ app.use((req, res) => {
     // Non-fatal: server continues without bot
   }
 
-  require("./src/services/cookieMonitor").start();
   require("./src/services/proxyManager").startRefreshing();
 
   server = app.listen(PORT, () => {
