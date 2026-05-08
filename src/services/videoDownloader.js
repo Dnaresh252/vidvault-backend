@@ -19,6 +19,7 @@ const platformDetector = require("./platformDetector");
 const Download = require("../models/Download");
 const cookieManager = require("./cookieManager");
 const cacheService = require("./cacheService"); // 🔥 NEW!
+const proxyManager = require("./proxyManager");
 // Line ~16 area — this line is MISSING ❌
 const instantMetadataService = require("./instantMetadataService");
 dns.setServers(["8.8.8.8", "1.1.1.1"]);
@@ -66,6 +67,15 @@ const YOUTUBE_RATELIMIT_PATTERNS = [
 function isYouTubeRateLimited(stderr) {
   const lower = stderr.toLowerCase();
   return YOUTUBE_RATELIMIT_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+}
+
+function isProxyHttpBlocked(stderr) {
+  return (
+    stderr.includes("HTTP Error 403") ||
+    stderr.includes("403 Forbidden") ||
+    stderr.includes("HTTP Error 429") ||
+    stderr.includes("429 Too Many Requests")
+  );
 }
 
 // 🔥 CONSTANTS FOR PREMIUM SERVICE
@@ -513,24 +523,22 @@ class VideoDownloaderService {
 
     console.log(`☁️ [${downloadId}] Downloading and uploading to R2...`);
 
-    const r2Options = { url, quality, format, audioOnly, fileName, contentType, downloadId, platform };
+    const baseR2Opts = { url, quality, format, audioOnly, fileName, contentType, downloadId, platform };
 
     let result;
     try {
-      result = await this.streamDirectlyToR2(r2Options, progressCallback);
+      result = await this._tryWithProxies(baseR2Opts, progressCallback, downloadId);
     } catch (err) {
       if (err.code === "INSTAGRAM_AUTH") {
         console.log(`🔄 [${downloadId}] Instagram auth error — rotating cookie...`);
         const rotation = await cookieManager.switchInstagramCookie();
-
         if (rotation.allFailed) {
           await cookieManager.notifyAllCookiesExpired();
           throw new Error("Instagram authentication failed. Please try again later.");
         }
-
         console.log(`🔄 [${downloadId}] Retrying with Instagram cookie ${rotation.newIndex + 1}...`);
         try {
-          result = await this.streamDirectlyToR2(r2Options, progressCallback);
+          result = await this.streamDirectlyToR2(baseR2Opts, progressCallback);
         } catch (retryErr) {
           if (retryErr.code === "INSTAGRAM_AUTH") {
             await cookieManager.notifyAllCookiesExpired();
@@ -541,15 +549,13 @@ class VideoDownloaderService {
       } else if (err.code === "YOUTUBE_RATE_LIMITED") {
         console.log(`🔄 [${downloadId}] YouTube rate limited — rotating cookie...`);
         const rotation = await cookieManager.switchYouTubeCookie();
-
         if (rotation.allFailed) {
           await cookieManager.notifyAllYouTubeCookiesRateLimited();
           throw new Error("YouTube is temporarily rate limiting our servers. Please try again in 1 hour.");
         }
-
         console.log(`🔄 [${downloadId}] Retrying with YouTube cookie ${rotation.newIndex + 1}...`);
         try {
-          result = await this.streamDirectlyToR2(r2Options, progressCallback);
+          result = await this.streamDirectlyToR2(baseR2Opts, progressCallback);
         } catch (retryErr) {
           if (retryErr.code === "YOUTUBE_RATE_LIMITED") {
             await cookieManager.notifyAllYouTubeCookiesRateLimited();
@@ -564,6 +570,42 @@ class VideoDownloaderService {
 
     console.log(`✓ [${downloadId}] R2 upload completed`);
     return result;
+  }
+
+  // Tries the download with up to 2 proxies before falling back to direct connection.
+  // Throws non-proxy errors (INSTAGRAM_AUTH, YOUTUBE_RATE_LIMITED) for the caller to handle.
+  async _tryWithProxies(r2Options, progressCallback, downloadId) {
+    const attempt = (proxy) =>
+      this.streamDirectlyToR2({ ...r2Options, proxy }, progressCallback);
+
+    let proxy = proxyManager.getBestProxy();
+    if (proxy) console.log(`🔀 [${downloadId}] Using proxy ${proxy}`);
+
+    // First attempt
+    try {
+      const result = await attempt(proxy);
+      if (proxy) proxyManager.recordResult(proxy, true);
+      return result;
+    } catch (err) {
+      if (err.code !== "PROXY_403" && err.code !== "PROXY_429") throw err;
+      proxyManager.recordResult(proxy, false, err.code.slice(6)); // "403" or "429"
+    }
+
+    // Second attempt with a different proxy
+    proxy = proxyManager.getBestProxy();
+    console.log(`🔀 [${downloadId}] Proxy retry with ${proxy || "direct"}...`);
+    try {
+      const result = await attempt(proxy);
+      if (proxy) proxyManager.recordResult(proxy, true);
+      return result;
+    } catch (err) {
+      if (err.code !== "PROXY_403" && err.code !== "PROXY_429") throw err;
+      if (proxy) proxyManager.recordResult(proxy, false, err.code.slice(6));
+    }
+
+    // Final fallback: direct connection (WARP or bare IP)
+    console.log(`🔀 [${downloadId}] Direct connection fallback...`);
+    return attempt(null);
   }
   // ✅ NEW METHOD: Download with progress callback support
   async downloadVideoWithProgress(options = {}) {
@@ -767,6 +809,7 @@ class VideoDownloaderService {
       contentType,
       downloadId,
       platform,
+      proxy = null,
     } = options;
 
     const tempFile = path.join(this.tempDir, `${downloadId}.${format}`);
@@ -780,6 +823,10 @@ class VideoDownloaderService {
       });
 
       ytDlpArgs.push("-o", tempFile);
+
+      if (proxy) {
+        ytDlpArgs.push("--proxy", proxy);
+      }
 
       console.log(`⬇️ [${downloadId}] Downloading and merging audio+video...`);
 
@@ -832,6 +879,10 @@ class VideoDownloaderService {
         ytDlpProcess.on("close", (code) => {
           if (code === 0) {
             resolve();
+          } else if (proxy && isProxyHttpBlocked(stderrBuffer)) {
+            const proxyErr = new Error("Proxy blocked by target");
+            proxyErr.code = stderrBuffer.includes("403") ? "PROXY_403" : "PROXY_429";
+            reject(proxyErr);
           } else if (
             (platform === "instagram" || platform === "threads") &&
             isInstagramAuthError(stderrBuffer)
@@ -1164,6 +1215,8 @@ class VideoDownloaderService {
       "10",
       "--fragment-retries",
       "10",
+      "--extractor-retries",
+      "5",
       "--retry-sleep",
       "3",
       "--file-access-retries",
@@ -1174,9 +1227,12 @@ class VideoDownloaderService {
       "youtube:player_client=web,default",
     );
 
-    // ✅ YouTube cookies (already working)
     if (platform === "youtube") {
-      options.push("--geo-bypass-country", "US");
+      options.push(
+        "--geo-bypass-country", "US",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--add-header", "Accept-Language:en-US,en;q=0.9",
+      );
       cookieManager.addCookieOptions(options, platform);
     }
     return options;
