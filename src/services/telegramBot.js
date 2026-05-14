@@ -8,10 +8,13 @@ const TOKEN                = process.env.TELEGRAM_BOT_TOKEN;
 const PAYMENT_LINK         = process.env.RAZORPAY_PAYMENT_LINK;
 const ANNUAL_PAYMENT_LINK  = process.env.RAZORPAY_ANNUAL_PAYMENT_LINK || process.env.RAZORPAY_PAYMENT_LINK;
 const API_URL              = process.env.API_URL || "https://api.vidvaults.com";
-const BOT_USERNAME  = "VidVaultFreeBot";
-const FREE_LIMIT    = 3; // Reduced from 5 → more upgrade pressure
-const STARS_PRICE   = 150; // Raised from 75 → $2/month (was $1)
-const RATE_LIMIT_SECONDS = 10;
+const BOT_USERNAME         = "VidVaultFreeBot";
+const FREE_LIMIT           = 3;
+const STARS_PRICE          = 150;
+const RATE_LIMIT_SECONDS   = 10;
+const FREE_COOLDOWN_MS     = 12 * 60 * 60 * 1000; // 12 hours between free downloads
+const MONTHLY_PRICE_INR    = 79;
+const ANNUAL_PRICE_INR     = 499;
 
 // Indian languages — show Razorpay first; all others → Stars first
 const INDIAN_LANGS = new Set(["hi", "ta", "te", "bn", "ur", "kn", "ml"]);
@@ -23,31 +26,30 @@ function isEnglishUser(user) {
   return (user.language || "en") === "en";
 }
 
-// Smart payment keyboard — 3 states:
-// Indian language → ₹29 first
-// English (unknown region) → both shown with clear India / International labels
-// Other international → Stars first
-function getPaymentKeyboard(paymentLink, isIndian, isEnglish = false) {
+// Smart payment keyboard — inline upgrade prompt
+// monthlyLink: Cashfree/Razorpay monthly URL
+// annualLink:  Cashfree/Razorpay annual URL (optional — if missing, omit annual row)
+function getPaymentKeyboard(monthlyLink, isIndian, isEnglish = false, annualLink = null) {
   if (isIndian) {
-    return {
-      inline_keyboard: [
-        [{ text: "🇮🇳 Pay ₹29 — UPI / GPay / Cards", url: paymentLink }],
-        [{ text: "⭐ Pay with Telegram Stars", callback_data: "stars_pay" }],
-      ]
-    };
+    const rows = [
+      [{ text: `🇮🇳 ₹${MONTHLY_PRICE_INR}/month — UPI / GPay / Cards`, url: monthlyLink }],
+    ];
+    if (annualLink) rows.push([{ text: `🏆 ₹${ANNUAL_PRICE_INR}/year — Best Value 🔥`, url: annualLink }]);
+    rows.push([{ text: "⭐ Pay with Telegram Stars", callback_data: "stars_pay" }]);
+    return { inline_keyboard: rows };
   }
   if (isEnglish) {
-    return {
-      inline_keyboard: [
-        [{ text: "🇮🇳 India — ₹29/month (UPI / Cards)", url: paymentLink }],
-        [{ text: "🌍 International — ⭐ 150 Stars ($2)", callback_data: "stars_pay" }],
-      ]
-    };
+    const rows = [
+      [{ text: `🇮🇳 India — ₹${MONTHLY_PRICE_INR}/month (UPI / Cards)`, url: monthlyLink }],
+    ];
+    if (annualLink) rows.push([{ text: `🏆 India Annual — ₹${ANNUAL_PRICE_INR}/year 🔥`, url: annualLink }]);
+    rows.push([{ text: "🌍 International — ⭐ 150 Stars ($2)", callback_data: "stars_pay" }]);
+    return { inline_keyboard: rows };
   }
   return {
     inline_keyboard: [
       [{ text: "⭐ Upgrade — 150 Stars ($2/month)", callback_data: "stars_pay" }],
-      [{ text: "🇮🇳 Pay ₹29 (India only)", url: paymentLink }],
+      [{ text: `🇮🇳 Pay ₹${MONTHLY_PRICE_INR} (India only)`, url: monthlyLink }],
     ]
   };
 }
@@ -89,15 +91,15 @@ setInterval(async () => {
           const paymentLink = PAYMENT_LINK;
           const msg = daysAgo === 0
             ? (indian
-                ? `😔 *Your Premium just expired\\.*\n\nYou're back to *3 downloads/month*\\.\nRenew for ~₹99~ *₹29* and stay unlimited\\.\n\n/premium`
-                : `😔 *Your Premium just expired\\.*\n\nBack to *3 downloads/month*\\.\nRenew with *150 Stars* — one tap, instant\\.\n\n/premium`)
+                ? `😔 *Your Premium just expired\\.*\n\nYou're back to *12\\-hour cooldowns* and *3 downloads/month*\\.\nRenew for *₹${MONTHLY_PRICE_INR}/month* and download anytime, unlimited\\.\n\n👇 /premium`
+                : `😔 *Your Premium just expired\\.*\n\nYou're back to *12\\-hour cooldowns* between downloads\\.\nRenew with *150 Stars* — one tap, instant access\\.\n\n👇 /premium`)
             : daysAgo === 3
             ? (indian
-                ? `⚠️ *3 days without Premium\\.*\n\nHow many videos have you missed this week\\?\n\nRenew for ₹29 → unlimited forever\n/premium`
-                : `⚠️ *3 days without Premium\\.*\n\nHow many videos have you missed\\?\n\nRenew with *150 Stars* → unlimited forever\n/premium`)
+                ? `⚠️ *3 days without Premium\\.*\n\nEvery download has a *12\\-hour wait* now\\.\n\n*₹${MONTHLY_PRICE_INR}/month* → unlimited, instant, forever\n👇 /premium`
+                : `⚠️ *3 days without Premium\\.*\n\nStill waiting 12 hours between downloads\\?\n\n*150 Stars* → unlimited right now\n👇 /premium`)
             : (indian
-                ? `🔥 *Last reminder — renew for ₹29*\n\nDon't lose access forever\\. Hundreds of users renewed this week\\.\n/premium`
-                : `🔥 *Last reminder — 150 Stars*\n\nDon't lose unlimited access\\. Hundreds renewed this week\\.\n/premium`);
+                ? `🔥 *Final reminder — ₹${MONTHLY_PRICE_INR}/month*\n\nEvery download you wait 12 hours is *Premium calling you\\.*\nHundreds renewed this week\\. Your turn 👇\n/premium`
+                : `🔥 *Final reminder — 150 Stars*\n\nNo more 12\\-hour waits\\. Hundreds renewed this week\\.\n👇 /premium`);
 
           await bot.sendMessage(u.telegramId, msg, { parse_mode: "MarkdownV2" });
           await new Promise(r => setTimeout(r, 100));
@@ -188,19 +190,19 @@ async function runFridayBroadcast() {
       const indian = INDIAN_LANGS.has(u.language || "");
       return {
         text: indian
-          ? `🎉 *Weekend Special\\!*\n\n` +
-            `This weekend — download unlimited on VidVault\\!\n\n` +
-            `✅ Unlimited downloads\n` +
+          ? `🎉 *Weekend Deal — Download Unlimited\\!*\n\n` +
+            `Tired of waiting 12 hours between downloads\\?\n\n` +
+            `✅ *No cooldowns* — download anytime\n` +
             `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
             `✅ YouTube, Instagram, TikTok \\+ 25 more\n\n` +
-            `~₹99~ *₹29/month* — less than one chai ☕\n\n` +
+            `📅 *₹${MONTHLY_PRICE_INR}/month* · 🏆 *₹${ANNUAL_PRICE_INR}/year* \\(save ₹${MONTHLY_PRICE_INR * 12 - ANNUAL_PRICE_INR}\\)\n\n` +
             `👉 /premium`
-          : `🎉 *Weekend Special\\!*\n\n` +
-            `This weekend — download anything, unlimited\\!\n\n` +
-            `✅ Unlimited downloads\n` +
+          : `🎉 *Weekend Deal — Go Unlimited\\!*\n\n` +
+            `No more 12\\-hour waits\\. Download instantly, every time\\.\n\n` +
+            `✅ *No cooldowns* — instant downloads\n` +
             `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
             `✅ Works in *50\\+ countries*\n\n` +
-            `⭐ *150 Stars/month* — one tap, instant\\!\n\n` +
+            `⭐ *150 Stars/month* — one tap, active immediately\\!\n\n` +
             `👉 /premium`,
         opts: { parse_mode: "MarkdownV2" },
       };
@@ -228,15 +230,23 @@ async function runMonthEndBroadcast() {
 
       return {
         text: indian
-          ? `⚠️ *3 days left in this month\\!*\n\n` +
+          ? `⚠️ *3 days left this month\\!*\n\n` +
             `You've used *${used}/${limit}* free downloads\\.\n` +
             `${usedLine}\n\n` +
-            `✅ Unlimited for ~₹99~ *₹29* — resets every month\n\n` +
+            `⚡ *Premium removes every limit:*\n` +
+            `• No cooldowns — download anytime\n` +
+            `• 1080p \\+ 4K unlocked\n` +
+            `• Unlimited downloads\n\n` +
+            `📅 *₹${MONTHLY_PRICE_INR}/month* · 🏆 *₹${ANNUAL_PRICE_INR}/year*\n\n` +
             `👉 /premium`
-          : `⚠️ *3 days left in this month\\!*\n\n` +
+          : `⚠️ *3 days left this month\\!*\n\n` +
             `You've used *${used}/${limit}* free downloads\\.\n` +
             `${usedLine}\n\n` +
-            `⭐ *150 Stars* → unlimited from right now\n\n` +
+            `⚡ *Premium removes every limit:*\n` +
+            `• No cooldowns — download anytime\n` +
+            `• 1080p \\+ 4K unlocked\n` +
+            `• Unlimited downloads\n\n` +
+            `⭐ *150 Stars* → unlimited right now\n\n` +
             `👉 /premium`,
         opts: { parse_mode: "MarkdownV2" },
       };
@@ -399,10 +409,10 @@ async function createRazorpayLink(user, plan = "monthly", extraNotes = {}) {
     const res  = await axios.post(
       "https://api.razorpay.com/v1/payment_links",
       {
-        amount: isAnnual ? 24900 : 2900,
+        amount: isAnnual ? ANNUAL_PRICE_INR * 100 : MONTHLY_PRICE_INR * 100,
         currency: "INR",
         description: isAnnual
-          ? "VidVault Premium — 1 Year Unlimited Downloads (Save ₹99)"
+          ? `VidVault Premium — 1 Year Unlimited Downloads (Save ₹${MONTHLY_PRICE_INR * 12 - ANNUAL_PRICE_INR})`
           : "VidVault Premium — 1 Month Unlimited Downloads",
         notes: {
           telegram_id: user.telegramId,
@@ -426,6 +436,69 @@ async function createRazorpayLink(user, plan = "monthly", extraNotes = {}) {
 async function createPaymentLink(user)       { return createRazorpayLink(user, "monthly"); }
 async function createAnnualPaymentLink(user) { return createRazorpayLink(user, "annual");  }
 
+// Cashfree payment link — falls back to Razorpay on missing config
+async function createCashfreePaymentLink(user, plan = "monthly") {
+  const appId     = process.env.CASHFREE_APP_ID;
+  const secretKey = process.env.CASHFREE_SECRET_KEY;
+  const env       = process.env.CASHFREE_ENV || "PRODUCTION";
+  const isAnnual  = plan === "annual";
+
+  if (!appId || !secretKey) {
+    return isAnnual ? createAnnualPaymentLink(user) : createPaymentLink(user);
+  }
+
+  const baseUrl = env === "PRODUCTION"
+    ? "https://api.cashfree.com/pg/links"
+    : "https://sandbox.cashfree.com/pg/links";
+
+  // Static fallback links (pre-created from dashboard) — used if API call fails
+  const staticMonthly = process.env.CASHFREE_MONTHLY_LINK;
+  const staticAnnual  = process.env.CASHFREE_ANNUAL_LINK;
+
+  try {
+    const linkId = `VV_${user.telegramId}_${Date.now()}`;
+    const res = await axios.post(
+      baseUrl,
+      {
+        link_id:          linkId,
+        link_amount:      isAnnual ? ANNUAL_PRICE_INR : MONTHLY_PRICE_INR,
+        link_currency:    "INR",
+        link_purpose:     isAnnual
+          ? "VidVault Premium — 1 Year Unlimited Downloads"
+          : "VidVault Premium — 1 Month Unlimited Downloads",
+        customer_details: {
+          customer_id:    user.telegramId,
+          customer_name:  user.firstName || user.username || "VidVault User",
+          customer_phone: "9999999999",
+        },
+        link_notify:      { send_sms: false, send_email: false },
+        link_auto_reminders: false,
+        link_notes: {
+          telegram_id: user.telegramId,
+          username:    user.username || user.firstName || "user",
+          plan_type:   plan,
+        },
+        link_expiry_time: new Date(Date.now() + 3600 * 1000).toISOString(),
+      },
+      {
+        headers: {
+          "x-client-id":     appId,
+          "x-client-secret": secretKey,
+          "x-api-version":   "2023-08-01",
+          "Content-Type":    "application/json",
+        },
+        timeout: 5000,
+      }
+    );
+    return res.data.link_url;
+  } catch (err) {
+    console.error("Cashfree link creation failed:", err.message);
+    // Fallback order: static Cashfree link → Razorpay
+    if (isAnnual) return staticAnnual || createAnnualPaymentLink(user);
+    return staticMonthly || createPaymentLink(user);
+  }
+}
+
 // Stars invoice — monthly or annual
 async function sendStarsInvoiceForPlan(chatId, user, plan = "monthly") {
   const isAnnual = plan === "annual";
@@ -441,6 +514,21 @@ async function sendStarsInvoiceForPlan(chatId, user, plan = "monthly") {
     [{ label: isAnnual ? "VidVault Premium (1 Year)" : "VidVault Premium (1 Month)",
        amount: isAnnual ? 1000 : STARS_PRICE }]
   );
+}
+
+// Cached premium user count — refreshed every 30 min, never blocks UX
+let _premiumCountCache = { count: 0, fetchedAt: 0 };
+async function getPremiumCount() {
+  if (Date.now() - _premiumCountCache.fetchedAt < 30 * 60 * 1000) {
+    return _premiumCountCache.count;
+  }
+  try {
+    const n = await TelegramUser.countDocuments({ plan: "premium" });
+    _premiumCountCache = { count: n, fetchedAt: Date.now() };
+    return n;
+  } catch {
+    return _premiumCountCache.count || 200;
+  }
 }
 
 // Fetch instant metadata (title, thumbnail, duration, platform)
@@ -527,9 +615,9 @@ function getTasteNudge(user) {
     `👑 *That was 4K Ultra\\!*\n` +
     `_That's what Premium feels like — every single download\\._\n\n` +
     (indian
-      ? `Get unlimited 4K forever:\n~₹99~ *₹29/month* → /premium`
+      ? `Get unlimited 4K forever:\n~₹99~ *₹79/month* → /premium`
       : english
-      ? `Get unlimited 4K forever:\n🇮🇳 *₹29/month* · 🌍 *150 Stars* → /premium`
+      ? `Get unlimited 4K forever:\n🇮🇳 *₹79/month* · 🌍 *150 Stars* → /premium`
       : `Get unlimited 4K forever:\n⭐ *150 Stars/month* → /premium`);
 }
 
@@ -541,18 +629,18 @@ function getUpgradeNudge(downloadsUsed, user) {
   const remaining      = effectiveLimit - downloadsUsed;
   const streak         = user.currentStreak || 0;
   const streakWarning  = streak >= 2 ? `🔥 Streak: *${streak} days* — upgrade to protect it\\!\n` : "";
-  const bothPricing    = `🇮🇳 *₹29/month* · 🌍 *150 Stars* → /premium`;
+  const bothPricing    = `🇮🇳 *₹${MONTHLY_PRICE_INR}/month* · 🌍 *150 Stars* → /premium`;
 
   if (remaining === 1) {
     return indian
-      ? `\n━━━━━━━━━━━━━━━━━━━━\n⚠️ *1 free download left this month\\!*\n${streakWarning}~₹99~ *₹29/month* → /premium`
+      ? `\n━━━━━━━━━━━━━━━━━━━━\n⚠️ *1 free download left this month\\!*\n${streakWarning}*₹${MONTHLY_PRICE_INR}/month* — unlimited forever → /premium`
       : english
       ? `\n━━━━━━━━━━━━━━━━━━━━\n⚠️ *1 free download left this month\\!*\n${streakWarning}${bothPricing}`
       : `\n━━━━━━━━━━━━━━━━━━━━\n⚠️ *1 free download left this month\\!*\n${streakWarning}⭐ *150 Stars/month* → /premium`;
   }
   if (remaining === 0) {
     return indian
-      ? `\n━━━━━━━━━━━━━━━━━━━━\n🔥 *That was your last free download\\!*\n${streakWarning}~₹99~ *₹29/month* → /premium`
+      ? `\n━━━━━━━━━━━━━━━━━━━━\n🔥 *That was your last free download\\!*\n${streakWarning}*₹${MONTHLY_PRICE_INR}/month* — go unlimited now → /premium`
       : english
       ? `\n━━━━━━━━━━━━━━━━━━━━\n🔥 *That was your last free download\\!*\n${streakWarning}${bothPricing}`
       : `\n━━━━━━━━━━━━━━━━━━━━\n🔥 *That was your last free download\\!*\n${streakWarning}⭐ *150 Stars/month* → /premium`;
@@ -877,10 +965,24 @@ bot.onText(/\/status/, async (msg) => {
     const indian    = isIndianUser(user);
     const english   = isEnglishUser(user);
     const upgradePrompt = indian
-      ? `⚡ *Go unlimited for ~₹99~ ₹29/month*`
+      ? `⚡ *Go unlimited for ₹${MONTHLY_PRICE_INR}/month* or ₹${ANNUAL_PRICE_INR}/year`
       : english
-      ? `⚡ *Go unlimited:* 🇮🇳 ₹29/month · 🌍 150 Stars`
+      ? `⚡ *Go unlimited:* 🇮🇳 ₹${MONTHLY_PRICE_INR}/month · 🌍 150 Stars`
       : `⚡ *Go unlimited for ⭐ 150 Stars/month*`;
+
+    // Cooldown status for free users
+    let cooldownLine = "";
+    if (!isPremium && user.lastDownloadAt) {
+      const elapsed  = Date.now() - new Date(user.lastDownloadAt).getTime();
+      const hoursLeft = Math.ceil((FREE_COOLDOWN_MS - elapsed) / (60 * 60 * 1000));
+      if (elapsed < FREE_COOLDOWN_MS) {
+        cooldownLine = `\n⏳ Next free download: *${hoursLeft}h*\n`;
+      } else {
+        cooldownLine = `\n✅ Ready to download\\!\n`;
+      }
+    } else if (!isPremium) {
+      cooldownLine = `\n✅ Ready to download\\!\n`;
+    }
 
     // Streak section
     const streak      = user.currentStreak || 0;
@@ -916,6 +1018,7 @@ bot.onText(/\/status/, async (msg) => {
         `📥 Used: *${user.downloadsThisMonth}/${effectiveLimit}* this month\n` +
         `✅ Remaining: *${remaining}* downloads\n` +
         `🔄 Resets in: *${days} days*\n` +
+        cooldownLine +
         `📈 Total downloads: *${user.totalDownloads}*\n\n` +
         `🎁 Referral: *${esc(user.referralCode)}* \\| 👥 *${user.referralCount}/10* friends` +
         streakSection +
@@ -923,7 +1026,15 @@ bot.onText(/\/status/, async (msg) => {
         `${upgradePrompt}\n` +
         `/premium`;
 
-    await bot.sendMessage(chatId, statusMsg, { parse_mode: "MarkdownV2" });
+    const statusOpts = { parse_mode: "MarkdownV2" };
+    if (!isPremium) {
+      statusOpts.reply_markup = {
+        inline_keyboard: [
+          [{ text: `⭐ Upgrade to Premium — /premium`, callback_data: "upgrade" }],
+        ],
+      };
+    }
+    await bot.sendMessage(chatId, statusMsg, statusOpts);
   } catch (err) {
     console.error("Status error:", err);
   }
@@ -963,10 +1074,10 @@ bot.onText(/\/premium/, async (msg) => {
         `✅ Unlimited downloads\n` +
         `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n` +
         `✅ All 25\\+ platforms\n` +
-        `✅ Activates instantly\n\n` +
+        `✅ Instant UPI / GPay / Cards\n\n` +
         `━━━━━━━━━━━━━━━━━━━━\n` +
-        `📅 *Monthly:* ~₹99~ *₹29/month*\n` +
-        `🏆 *Annual:* *₹249/year* — _save ₹99_ 🔥\n` +
+        `📅 *Monthly:* *₹${MONTHLY_PRICE_INR}/month*\n` +
+        `🏆 *Annual:* *₹${ANNUAL_PRICE_INR}/year* — _save ₹${MONTHLY_PRICE_INR * 12 - ANNUAL_PRICE_INR}_ 🔥\n` +
         `━━━━━━━━━━━━━━━━━━━━\n\n` +
         `Choose your plan 👇`
       : english
@@ -978,8 +1089,8 @@ bot.onText(/\/premium/, async (msg) => {
         `✅ Activates instantly\n\n` +
         `━━━━━━━━━━━━━━━━━━━━\n` +
         `🇮🇳 *India — UPI / Cards:*\n` +
-        `📅 Monthly: ~₹99~ *₹29/month*\n` +
-        `🏆 Annual: *₹249/year* — _save ₹99_ 🔥\n\n` +
+        `📅 Monthly: *₹${MONTHLY_PRICE_INR}/month*\n` +
+        `🏆 Annual: *₹${ANNUAL_PRICE_INR}/year* — _save ₹${MONTHLY_PRICE_INR * 12 - ANNUAL_PRICE_INR}_ 🔥\n\n` +
         `🌍 *International — Telegram Stars:*\n` +
         `📅 Monthly: ⭐ *150 Stars* \\(≈ \\$2\\)\n` +
         `🏆 Annual: ⭐ *1000 Stars* — _save 800_ 🔥\n` +
@@ -1000,16 +1111,16 @@ bot.onText(/\/premium/, async (msg) => {
     const keyboard = indian
       ? {
           inline_keyboard: [
-            [{ text: "📅 Monthly — ₹29/month", url: paymentLink }],
-            [{ text: "🏆 Annual — ₹249/year (Best Value)", url: annualPaymentLink }],
+            [{ text: `📅 Monthly — ₹${MONTHLY_PRICE_INR}/month`, url: paymentLink }],
+            [{ text: `🏆 Annual — ₹${ANNUAL_PRICE_INR}/year (Best Value)`, url: annualPaymentLink }],
             [{ text: "⭐ Pay with Telegram Stars", callback_data: "stars_plan_menu" }],
           ]
         }
       : english
       ? {
           inline_keyboard: [
-            [{ text: "🇮🇳 Monthly — ₹29/month (India)", url: paymentLink }],
-            [{ text: "🇮🇳 Annual — ₹249/year (India · Best Value)", url: annualPaymentLink }],
+            [{ text: `🇮🇳 Monthly — ₹${MONTHLY_PRICE_INR}/month (India)`, url: paymentLink }],
+            [{ text: `🇮🇳 Annual — ₹${ANNUAL_PRICE_INR}/year (India · Best Value)`, url: annualPaymentLink }],
             [{ text: "🌍 Monthly — ⭐ 150 Stars (International)", callback_data: "stars_monthly" }],
             [{ text: "🌍 Annual — ⭐ 1000 Stars (International)", callback_data: "stars_annual" }],
           ]
@@ -1018,7 +1129,7 @@ bot.onText(/\/premium/, async (msg) => {
           inline_keyboard: [
             [{ text: "📅 Monthly — 150 Stars", callback_data: "stars_monthly" }],
             [{ text: "🏆 Annual — 1000 Stars (Best Value)", callback_data: "stars_annual" }],
-            [{ text: "🇮🇳 Pay ₹29 (India only)", url: paymentLink }],
+            [{ text: `🇮🇳 Pay ₹${MONTHLY_PRICE_INR} (India only)`, url: paymentLink }],
           ]
         };
 
@@ -1173,15 +1284,9 @@ bot.onText(/\/gift(?:\s+(.+))?/, async (msg, match) => {
     const recipientName = esc(recipient.firstName || recipient.username || "your friend");
     const indian        = isIndianUser(giver);
 
-    // Create Razorpay gift links — recipient's ID in notes so webhook activates them
-    const monthlyLink = await createRazorpayLink(
-      recipient, "monthly",
-      { is_gift: "true", gift_from_id: giverId }
-    );
-    const annualLink = await createRazorpayLink(
-      recipient, "annual",
-      { is_gift: "true", gift_from_id: giverId }
-    );
+    // Create payment links — recipient's ID in notes so webhook activates them
+    const monthlyLink = await createPaymentLink(recipient);
+    const annualLink  = await createAnnualPaymentLink(recipient);
 
     // callback_data encodes the recipient's telegramId (≤64 bytes — verified safe)
     const giftMsg =
@@ -1195,8 +1300,8 @@ bot.onText(/\/gift(?:\s+(.+))?/, async (msg, match) => {
     const keyboard = indian
       ? {
           inline_keyboard: [
-            [{ text: "🎁 Gift Monthly — ₹29",              url: monthlyLink }],
-            [{ text: "🎁 Gift Annual  — ₹249 (Best Value)", url: annualLink }],
+            [{ text: "🎁 Gift Monthly — ₹79",              url: monthlyLink }],
+            [{ text: "🎁 Gift Annual  — ₹499 (Best Value)", url: annualLink }],
             [{ text: "⭐ Gift with Telegram Stars",         callback_data: `gift_stars_menu_${recipient.telegramId}` }],
           ],
         }
@@ -1204,7 +1309,7 @@ bot.onText(/\/gift(?:\s+(.+))?/, async (msg, match) => {
           inline_keyboard: [
             [{ text: "⭐ Gift Monthly — 150 Stars",          callback_data: `gift_stars_monthly_${recipient.telegramId}` }],
             [{ text: "⭐ Gift Annual  — 1000 Stars (Best)",  callback_data: `gift_stars_annual_${recipient.telegramId}` }],
-            [{ text: "🇮🇳 Gift ₹29 (India only)",            url: monthlyLink }],
+            [{ text: "🇮🇳 Gift ₹79 (India only)",            url: monthlyLink }],
           ],
         };
 
@@ -1480,7 +1585,7 @@ bot.on("message", async (msg) => {
             `OR unlock everything right now:\n` +
             `✅ Unlimited downloads\n` +
             `✅ 4K \\+ 1080p \\+ MP3 320k\n\n` +
-            `~₹99~ *₹29/month* — less than one chai ☕`
+            `~₹99~ *₹79/month* — less than one chai ☕`
           : english
           ? `🚫 *Monthly limit reached\\!*\n\n` +
             `You've downloaded *${user.totalDownloads} videos* total 🎬\n` +
@@ -1489,7 +1594,7 @@ bot.on("message", async (msg) => {
             `OR go unlimited right now:\n` +
             `✅ Unlimited downloads\n` +
             `✅ 4K \\+ 1080p \\+ MP3 320k\n\n` +
-            `🇮🇳 *₹29/month* \\(India\\) · 🌍 *150 Stars* \\(International\\)`
+            `🇮🇳 *₹79/month* \\(India\\) · 🌍 *150 Stars* \\(International\\)`
           : `🚫 *You've reached your limit\\!*\n\n` +
             `You've downloaded *${user.totalDownloads} videos* total — great taste 🎬\n` +
             streakFomo +
@@ -1638,24 +1743,33 @@ bot.on("callback_query", async (query) => {
     // ── Locked premium button tapped ─────────────────────
     if (data === "locked") {
       await bot.answerCallbackQuery(query.id, {
-        text: "🔒 Premium quality — upgrade to unlock!",
-        show_alert: true,
+        text: "👑 Premium quality — you have great taste!",
+        show_alert: false,
       });
-      const paymentLink = await createPaymentLink(user);
       const indian      = isIndianUser(user);
       const english     = isEnglishUser(user);
+      const paymentLink = await createPaymentLink(user);
+      const annualLink  = await createAnnualPaymentLink(user);
+      const premiumCount = await getPremiumCount();
       await bot.sendMessage(
         chatId,
-        `🔒 *Premium quality*\n\n` +
-        `You tapped 1080p or 4K — good taste 😎\n\n` +
-        `✅ Unlock with Premium:\n` +
-        `🎬 1080p \\+ 4K \\+ MP3 320k\n` +
-        `🚀 Unlimited downloads\n\n` +
-        `${indian ? `~₹99~ *₹29/month*` : english ? `🇮🇳 *₹29* · 🌍 *150 Stars*` : `⭐ *150 Stars/month*`} — tap below 👇`,
+        `👑 *You picked 1080p / 4K — great taste\\!*\n\n` +
+        `This quality is locked to Premium\\.\n` +
+        `*${premiumCount}\\+ members* are downloading in 4K right now\\.\n\n` +
+        `✅ Unlimited downloads — no cooldowns\n` +
+        `✅ 1080p \\+ 4K \\+ MP3 320k — all unlocked\n` +
+        `✅ All 25\\+ platforms\n` +
+        `✅ Activates the second you pay\n\n` +
+        (indian
+          ? `📅 Monthly: *₹${MONTHLY_PRICE_INR}* · 🏆 Annual: *₹${ANNUAL_PRICE_INR}/year*\n_Save ₹${MONTHLY_PRICE_INR * 12 - ANNUAL_PRICE_INR} with annual\\!_ 🔥\n\n`
+          : english
+          ? `🇮🇳 ₹${MONTHLY_PRICE_INR}/month · 🌍 150 Stars · 🏆 Annual ₹${ANNUAL_PRICE_INR}\n\n`
+          : `⭐ 150 Stars/month · 🏆 1000 Stars/year\n\n`) +
+        `👇 Choose your plan`,
         {
           parse_mode: "MarkdownV2",
           disable_web_page_preview: true,
-          reply_markup: getPaymentKeyboard(paymentLink, indian, english),
+          reply_markup: getPaymentKeyboard(paymentLink, indian, english, annualLink),
         }
       );
       return;
@@ -1664,20 +1778,28 @@ bot.on("callback_query", async (query) => {
     // ── Upgrade button ────────────────────────────────────
     if (data === "upgrade") {
       await bot.answerCallbackQuery(query.id);
-      const paymentLink = await createPaymentLink(user);
       const indian      = isIndianUser(user);
       const english     = isEnglishUser(user);
+      const paymentLink = await createPaymentLink(user);
+      const annualLink  = await createAnnualPaymentLink(user);
+      const premiumCount = await getPremiumCount();
       await bot.sendMessage(
         chatId,
-        indian
-          ? `⭐ *VidVault Premium — ₹29/month*\n\n✅ Unlimited downloads\n✅ 4K \\+ 1080p quality\n✅ Activates in seconds\n\n~₹99~ *₹29/month* — less than one chai ☕`
+        `⭐ *VidVault Premium*\n\n` +
+        `_${premiumCount}\\+ users downloading without limits right now\\._\n\n` +
+        `✅ No cooldowns — download any time\n` +
+        `✅ 1080p \\+ 4K \\+ MP3 320k\n` +
+        `✅ All 25\\+ platforms\n` +
+        `✅ Activates instantly after payment\n\n` +
+        (indian
+          ? `📅 Monthly: *₹${MONTHLY_PRICE_INR}* · 🏆 Annual: *₹${ANNUAL_PRICE_INR}*\n_Save ₹${MONTHLY_PRICE_INR * 12 - ANNUAL_PRICE_INR}/year\\!_ 🔥`
           : english
-          ? `⭐ *VidVault Premium*\n\n✅ Unlimited downloads\n✅ 4K \\+ 1080p quality\n✅ Activates in seconds\n\n🇮🇳 *₹29/month* \\(India\\) · 🌍 *150 Stars* \\(International\\)`
-          : `⭐ *VidVault Premium — 150 Stars/month*\n\n✅ Unlimited downloads\n✅ 4K \\+ 1080p quality\n✅ Activates in seconds\n\n⭐ *150 Stars* — less than a coffee ☕`,
+          ? `🇮🇳 *₹${MONTHLY_PRICE_INR}/month* · 🌍 *150 Stars* · 🏆 *₹${ANNUAL_PRICE_INR}/year*`
+          : `⭐ *150 Stars/month* · 🏆 *1000 Stars/year*`),
         {
           parse_mode: "MarkdownV2",
           disable_web_page_preview: true,
-          reply_markup: getPaymentKeyboard(paymentLink, indian, english),
+          reply_markup: getPaymentKeyboard(paymentLink, indian, english, annualLink),
         }
       );
       return;
@@ -1816,22 +1938,54 @@ async function handleDownload(chatId, user, url, params) {
   const effectiveLimit = FREE_LIMIT + (user.bonusDownloads || 0);
   if (user.plan === "free" && user.downloadsThisMonth >= effectiveLimit) {
     activeUsers.delete(userId);
-    const days        = daysUntilReset(user.monthResetDate);
-    const paymentLink = await createPaymentLink(user);
-    const indian      = isIndianUser(user);
-    const english     = isEnglishUser(user);
+    const days         = daysUntilReset(user.monthResetDate);
+    const indian       = isIndianUser(user);
+    const english      = isEnglishUser(user);
+    const paymentLink  = await createPaymentLink(user);
+    const annualLink   = await createAnnualPaymentLink(user);
+    const streakFomo   = getStreakFomoLine(user);
     await bot.sendMessage(
       chatId,
-      `⚠️ *Monthly limit reached\\!*\n\n` +
+      `🚫 *Monthly limit reached\\!*\n\n` +
       `You've used all *${effectiveLimit} free downloads* this month\\.\n` +
-      `Resets in *${days} days* OR unlock everything now 👇`,
+      `Resets in *${days} days* — or go unlimited right now 👇\n` +
+      streakFomo,
       {
         parse_mode: "MarkdownV2",
         disable_web_page_preview: true,
-        reply_markup: getPaymentKeyboard(paymentLink, indian, english),
+        reply_markup: getPaymentKeyboard(paymentLink, indian, english, annualLink),
       }
     );
     return;
+  }
+
+  // 12-hour cooldown for free users
+  if (user.plan === "free") {
+    const lastDl = user.lastDownloadAt ? new Date(user.lastDownloadAt).getTime() : 0;
+    const elapsed = Date.now() - lastDl;
+    if (elapsed < FREE_COOLDOWN_MS) {
+      activeUsers.delete(userId);
+      const hoursLeft   = Math.ceil((FREE_COOLDOWN_MS - elapsed) / (60 * 60 * 1000));
+      const indian      = isIndianUser(user);
+      const english     = isEnglishUser(user);
+      const paymentLink = await createPaymentLink(user);
+      const annualLink  = await createAnnualPaymentLink(user);
+      const streakFomo  = getStreakFomoLine(user);
+      await bot.sendMessage(
+        chatId,
+        `⏳ *Cooldown — ${hoursLeft}h remaining*\n\n` +
+        `Free users can download once every *12 hours*\\.\n` +
+        `Next free download in *${hoursLeft} hour${hoursLeft !== 1 ? "s" : ""}*\\.\n\n` +
+        `⭐ *Premium* removes all limits — download instantly, unlimited\\.\n` +
+        streakFomo,
+        {
+          parse_mode: "MarkdownV2",
+          disable_web_page_preview: true,
+          reply_markup: getPaymentKeyboard(paymentLink, indian, english, annualLink),
+        }
+      );
+      return;
+    }
   }
 
   const processingMsg = await bot.sendMessage(
@@ -1852,6 +2006,7 @@ async function handleDownload(chatId, user, url, params) {
 
       user.downloadsThisMonth += 1;
       user.totalDownloads     += 1;
+      user.lastDownloadAt      = new Date();
 
       // Mark taste used — only on successful download, never on failure
       if (isTaste) user.hasUsed4KTaste = true;
@@ -1876,9 +2031,13 @@ async function handleDownload(chatId, user, url, params) {
 
       // Streak line only on day 2+ and only when streak actually incremented today
       const streakLine = getStreakLine(user, incremented);
+      // Premium first-download WOW line — only on first ever premium download
+      const isFirstPremiumDownload = isPremium && user.totalDownloads === 1 && (quality === "high" || quality === "highest");
       // Taste nudge overrides the regular nudge — it's more targeted
       const nudge = isPremium
-        ? ""
+        ? isFirstPremiumDownload
+          ? `\n━━━━━━━━━━━━━━━━━━━━\n👑 *Welcome to Premium\\!*\n_No limits\\. No cooldowns\\. No compromises\\._\n_This is what you unlocked\\. Enjoy every download\\! 🎬_`
+          : ""
         : isTaste
         ? getTasteNudge(user)
         : getUpgradeNudge(user.downloadsThisMonth, user);
@@ -2024,7 +2183,7 @@ bot.onText(/\/broadcast(?:\s+(.+))?/, async (msg, match) => {
       `🎉 *Weekend Special\\!*\n\n` +
       `✅ Unlimited downloads\n` +
       `✅ 4K Ultra \\+ 1080p \\+ MP3 320k\n\n` +
-      `~₹99~ *₹29/month* — less than one chai ☕\n\n👉 /premium`,
+      `~₹99~ *₹79/month* — less than one chai ☕\n\n👉 /premium`,
       { parse_mode: "MarkdownV2" }
     );
     await bot.sendMessage(chatId, `_This is what the Friday broadcast looks like\\._`, { parse_mode: "MarkdownV2" });

@@ -77,6 +77,8 @@ const telegramUserSchema = new mongoose.Schema({
   lastBroadcastDate: { type: Date },                    // last time any broadcast was sent
   // ─── 4K taste ───────────────────────────────────────────────────────
   hasUsed4KTaste: { type: Boolean, default: false },    // one-time free 4K download
+  // ─── Download cooldown ──────────────────────────────────────────────
+  lastDownloadAt: { type: Date },                       // for 12h free-user cooldown
 });
 
 // Auto reset monthly downloads

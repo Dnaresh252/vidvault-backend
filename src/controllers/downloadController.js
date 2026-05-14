@@ -79,7 +79,7 @@ exports.downloadVideoWithProgress = async (req, res) => {
       sendProgress({
         step: 1,
         status: "analyzing",
-        message: "Analyzing video...",
+        message: "🔍 Checking your link...",
         progress: 10,
         stage: "Initializing",
       });
@@ -109,7 +109,7 @@ exports.downloadVideoWithProgress = async (req, res) => {
       sendProgress({
         step: 2,
         status: "fetching",
-        message: "Fetching video information...",
+        message: "⚡ Found it! Getting details...",
         progress: 20,
         stage: "Getting Details",
       });
@@ -125,7 +125,7 @@ exports.downloadVideoWithProgress = async (req, res) => {
           sendProgress({
             step: 2,
             status: "fetching",
-            message: "Video information retrieved",
+            message: metadata?.title ? `🎬 ${metadata.title.substring(0, 45)}` : "✅ Video found!",
             progress: 30,
             stage: "Metadata Retrieved",
             title: metadata.title || "Video",
@@ -142,9 +142,9 @@ exports.downloadVideoWithProgress = async (req, res) => {
       sendProgress({
         step: 3,
         status: "downloading",
-        message: "Starting download...",
-        progress: 20,
-        stage: "Initializing Download",
+        message: "📥 Preparing your download...",
+        progress: 35,
+        stage: "Preparing",
         title: metadata.title || "Video",
         thumbnail: metadata.thumbnail,
       });
@@ -203,7 +203,7 @@ exports.downloadVideoWithProgress = async (req, res) => {
         sendProgress({
           step: 5,
           status: "complete",
-          message: "Download ready!",
+          message: "✅ Your download is ready!",
           progress: 100,
           stage: "Complete",
           data: downloadResult.data,
@@ -268,15 +268,6 @@ exports.downloadVideo = async (req, res) => {
 
     const userIP = req.ip || req.connection.remoteAddress;
     const userAgent = req.get("User-Agent");
-
-    const stats = videoDownloader.getServerStats();
-    if (stats.activeDownloads >= stats.maxConcurrent) {
-      return res.status(503).json({
-        status: "error",
-        message: "Server is at capacity. Please try again in a moment.",
-        retryAfter: 30,
-      });
-    }
 
     console.log(`📥 Download request - Quality: ${quality}, Format: ${format}`);
 

@@ -118,6 +118,7 @@ class VideoDownloaderService {
     }
 
     this.activeDownloads = new Map();
+    this.inProgressDownloads = new Map();
     this.maxConcurrentDownloads = 25;
     this.youtubeLastDownloadByIP = new Map();
 
@@ -310,11 +311,16 @@ class VideoDownloaderService {
     } = options;
 
     if (this.activeDownloads.size >= this.maxConcurrentDownloads) {
-      return {
-        success: false,
-        error: "Server is at capacity. Please try again in a moment.",
-        code: "SERVER_BUSY",
-      };
+      console.log(`⏳ Queue: waiting for slot (active: ${this.activeDownloads.size}/${this.maxConcurrentDownloads})`);
+      await new Promise(resolve => {
+        const check = setInterval(() => {
+          if (this.activeDownloads.size < this.maxConcurrentDownloads) {
+            clearInterval(check);
+            resolve();
+          }
+        }, 500);
+        setTimeout(() => { clearInterval(check); resolve(); }, 60000);
+      });
     }
 
     const downloadId = crypto.randomBytes(8).toString("hex");
@@ -333,6 +339,13 @@ class VideoDownloaderService {
       console.log(`⚙️ Quality: ${quality}, Format: ${format}`);
 
       this.activeDownloads.set(downloadId, { startTime: Date.now(), url });
+
+      const dedupKey = `${url}::${quality}::${format}`;
+      if (this.inProgressDownloads.has(dedupKey)) {
+        console.log(`⚡ [${downloadId}] Dedup HIT — joining in-progress download`);
+        this.activeDownloads.delete(downloadId);
+        return this.inProgressDownloads.get(dedupKey);
+      }
 
       // 🔥 STEP 1: Check R2 cache FIRST!
       console.log(`🔍 [${downloadId}] Checking cache...`);
@@ -444,25 +457,33 @@ class VideoDownloaderService {
         };
       }
 
-      const downloadResult = await this.performStreamingDownload({
-        url,
-        quality,
-        format,
-        audioOnly,
-        detection,
-        metadata,
-        downloadId,
-      });
-
-      // 🔥 STEP 4: Cache the R2 URL for next user!
-      await cacheService.setR2Url(
-        url,
-        quality,
-        format,
-        downloadResult.downloadUrl,
-        downloadResult.fileSize,
-        55 * 60, // 55 minutes
-      );
+      const downloadPromise = (async () => {
+        try {
+          const result = await this.performStreamingDownload({
+            url,
+            quality,
+            format,
+            audioOnly,
+            detection,
+            metadata,
+            downloadId,
+          });
+          // 🔥 STEP 4: Cache the R2 URL for next user!
+          await cacheService.setR2Url(
+            url,
+            quality,
+            format,
+            result.downloadUrl,
+            result.fileSize,
+            55 * 60, // 55 minutes
+          );
+          return result;
+        } finally {
+          this.inProgressDownloads.delete(dedupKey);
+        }
+      })();
+      this.inProgressDownloads.set(dedupKey, downloadPromise);
+      const downloadResult = await downloadPromise;
 
       const downloadDuration = (
         (Date.now() - downloadStartTime) /
@@ -671,11 +692,16 @@ class VideoDownloaderService {
     } = options;
 
     if (this.activeDownloads.size >= this.maxConcurrentDownloads) {
-      return {
-        success: false,
-        error: "Server is at capacity. Please try again in a moment.",
-        code: "SERVER_BUSY",
-      };
+      console.log(`⏳ Queue: waiting for slot (active: ${this.activeDownloads.size}/${this.maxConcurrentDownloads})`);
+      await new Promise(resolve => {
+        const check = setInterval(() => {
+          if (this.activeDownloads.size < this.maxConcurrentDownloads) {
+            clearInterval(check);
+            resolve();
+          }
+        }, 500);
+        setTimeout(() => { clearInterval(check); resolve(); }, 60000);
+      });
     }
 
     const downloadId = crypto.randomBytes(8).toString("hex");
@@ -692,6 +718,13 @@ class VideoDownloaderService {
       );
 
       this.activeDownloads.set(downloadId, { startTime: Date.now(), url });
+
+      const dedupKey = `${url}::${quality}::${format}`;
+      if (this.inProgressDownloads.has(dedupKey)) {
+        console.log(`⚡ [${downloadId}] Dedup HIT — joining in-progress download`);
+        this.activeDownloads.delete(downloadId);
+        return this.inProgressDownloads.get(dedupKey);
+      }
 
       // Check R2 cache first
       const cachedResult = await cacheService.getR2Url(url, quality, format);
@@ -757,21 +790,28 @@ class VideoDownloaderService {
         };
       }
 
-      // Perform download with progress callback
-      const downloadResult = await this.performStreamingDownload(
-        { url, quality, format, audioOnly, detection, metadata, downloadId },
-        progressCallback,
-      );
-
-      // Cache result for next user
-      await cacheService.setR2Url(
-        url,
-        quality,
-        format,
-        downloadResult.downloadUrl,
-        downloadResult.fileSize,
-        55 * 60,
-      );
+      // Perform download with progress callback — shared across dedup waiters
+      const downloadPromise = (async () => {
+        try {
+          const result = await this.performStreamingDownload(
+            { url, quality, format, audioOnly, detection, metadata, downloadId },
+            progressCallback,
+          );
+          await cacheService.setR2Url(
+            url,
+            quality,
+            format,
+            result.downloadUrl,
+            result.fileSize,
+            55 * 60,
+          );
+          return result;
+        } finally {
+          this.inProgressDownloads.delete(dedupKey);
+        }
+      })();
+      this.inProgressDownloads.set(dedupKey, downloadPromise);
+      const downloadResult = await downloadPromise;
 
       // ✅ THE ONLY FIX: Save to MongoDB ONLY on success (you only count completed!)
       try {
@@ -934,6 +974,10 @@ class VideoDownloaderService {
             const rateLimitErr = new Error("YouTube rate limited");
             rateLimitErr.code = "YOUTUBE_RATE_LIMITED";
             reject(rateLimitErr);
+          } else if (stderrBuffer.includes("No space left") || stderrBuffer.includes("ENOSPC")) {
+            const diskErr = new Error("no space left on device");
+            diskErr.code = "DISK_FULL";
+            reject(diskErr);
           } else {
             reject(new Error("Download failed"));
           }
@@ -1045,6 +1089,19 @@ class VideoDownloaderService {
           await fs.remove(tempFile);
         }
       } catch {}
+      if (error.code === "DISK_FULL" || (error.message && error.message.includes("ENOSPC"))) {
+        console.error("🚨 DISK FULL — triggering emergency cleanup");
+        try {
+          const { execSync } = require("child_process");
+          execSync("find /tmp/temp -type f -mmin +1 -delete 2>/dev/null || true");
+          execSync("find /tmp/downloads -type f -mmin +1 -delete 2>/dev/null || true");
+        } catch (cleanErr) {
+          console.error("Cleanup error:", cleanErr.message);
+        }
+        const diskError = new Error("no space left on device");
+        diskError.code = "DISK_FULL";
+        throw diskError;
+      }
       throw error;
     }
   }
@@ -1226,11 +1283,18 @@ class VideoDownloaderService {
       const maxHeight = heightMap[quality] || 720;
 
       if (format === "mp4") {
+        const hlsMap = {
+          highest: "96/95",
+          high: "95/94",
+          medium: "94/93",
+          low: "93/92/18",
+        };
+        const hlsFormat = hlsMap[quality] || "95/94";
         options.push(
           "-f",
-          `bv*[ext=mp4][height<=${maxHeight}]+ba[ext=m4a]/b[ext=mp4][height<=${maxHeight}]/best[height<=${maxHeight}]/best`,
+          `${hlsFormat}/18/bv*[ext=mp4][height<=${maxHeight}]+ba[ext=m4a]/b[ext=mp4][height<=${maxHeight}]/best`,
           "--merge-output-format",
-          "mp4",
+          "mp4"
         );
       } else if (format === "webm") {
         options.push(
@@ -1336,26 +1400,25 @@ class VideoDownloaderService {
   }
 
   getUserFriendlyError(errorMessage) {
-    const errorMap = {
-      private: "This video is private and cannot be downloaded.",
-      unavailable: "This video is no longer available.",
-      removed: "This video has been removed.",
-      "age-restricted":
-        "This video is age-restricted and cannot be downloaded.",
-      copyright: "This video is protected by copyright.",
-      "geo-restricted": "This video is not available in your region.",
-      timeout: "Download timed out. Please try a lower quality.",
-      "members-only": "This video is only available to channel members.",
-    };
-
-    const lowerError = errorMessage.toLowerCase();
-    for (const [key, message] of Object.entries(errorMap)) {
-      if (lowerError.includes(key.toLowerCase())) {
-        return message;
-      }
-    }
-
-    return "Download failed. The video may be restricted or unavailable.";
+    if (!errorMessage) return "Download failed. Please try again.";
+    const msg = errorMessage.toLowerCase();
+    if (msg.includes("private")) return "This video is private and cannot be downloaded.";
+    if (msg.includes("unavailable")) return "This video is no longer available.";
+    if (msg.includes("removed")) return "This video has been removed.";
+    if (msg.includes("age-restricted") || msg.includes("age restricted")) return "This video is age-restricted and cannot be downloaded.";
+    if (msg.includes("copyright")) return "This video is protected by copyright.";
+    if (msg.includes("geo-restricted") || msg.includes("not available in your country")) return "This video is not available in your region.";
+    if (msg.includes("members-only") || msg.includes("members only")) return "This video is only available to channel members.";
+    if (msg.includes("timeout") || msg.includes("timed out")) return "Taking too long. Please try a lower quality.";
+    if (msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("429")) return "YouTube is busy right now. Please try again in 2 minutes.";
+    if (msg.includes("sign in") || msg.includes("confirm")) return "Please try again in a moment.";
+    if (msg.includes("instagram") && msg.includes("auth")) return "Instagram is refreshing. Please try again in 30 seconds.";
+    if (msg.includes("cloud storage") || msg.includes("upload")) return "Storage is busy. Please try again in 30 seconds.";
+    if (msg.includes("no space") || msg.includes("enospc") || msg.includes("disk")) return "Server is busy processing requests. Please try again in 30 seconds.";
+    if (msg.includes("network") || msg.includes("econnrefused")) return "Network issue detected. Please try again.";
+    if (msg.includes("too large") || msg.includes("file_too_large")) return "Video is too large. Please try 720p quality.";
+    if (msg.includes("not supported") || msg.includes("unsupported")) return "This URL is not supported yet.";
+    return "Download failed. Please try again in a moment.";
   }
 
   async createDownloadRecord(options) {

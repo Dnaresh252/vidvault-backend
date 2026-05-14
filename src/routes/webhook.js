@@ -73,7 +73,7 @@ router.post('/razorpay', async (req, res) => {
 
       const isGift      = notes.is_gift === 'true';
       const giftFromId  = notes.gift_from_id || null;
-      const isAnnual    = notes.plan_type === 'annual' || (payment?.amount >= 24900);
+      const isAnnual    = notes.plan_type === 'annual' || (payment?.amount >= 49900);
       const days        = isAnnual ? 365 : 30;
 
       // Activate premium for recipient (telegramId = recipient for gifts)
@@ -146,12 +146,12 @@ router.post('/razorpay', async (req, res) => {
                 `From: \`${giftFromId || 'Unknown'}\`\n` +
                 `To: \`${telegramId}\`\n` +
                 `Payment ID: \`${paymentId || 'N/A'}\`\n` +
-                `Amount: ${isAnnual ? '₹249 \\(Annual\\)' : '₹29 \\(Monthly\\)'}`
+                `Amount: ${isAnnual ? '₹499 \\(Annual\\)' : '₹79 \\(Monthly\\)'}`
               : `💰 *New Premium Subscription\\!*\n\n` +
                 `Telegram ID: \`${telegramId}\`\n` +
                 `Username: ${esc(notes.username || 'Unknown')}\n` +
                 `Payment ID: \`${paymentId || 'N/A'}\`\n` +
-                `Amount: ${isAnnual ? '₹249 \\(Annual\\)' : '₹29 \\(Monthly\\)'}\n` +
+                `Amount: ${isAnnual ? '₹499 \\(Annual\\)' : '₹79 \\(Monthly\\)'}\n` +
                 `Renewal: ${wasAlreadyPremium ? 'Yes ♻️' : 'No 🆕'}\n` +
                 `Status: Auto\\-activated ✅`,
             { parse_mode: 'MarkdownV2' }
@@ -248,6 +248,138 @@ router.post('/razorpay', async (req, res) => {
 
   } catch (error) {
     console.error('Webhook error:', error);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// ─── Cashfree Webhook ─────────────────────────────────────────────────────────
+router.post('/cashfree', async (req, res) => {
+  try {
+    // ── Step 1: Verify HMAC signature ────────────────────────────────────────
+    const timestamp  = req.headers['x-webhook-timestamp'];
+    const signature  = req.headers['x-webhook-signature'];
+
+    if (!timestamp || !signature) {
+      console.log('❌ Cashfree webhook: missing signature headers');
+      return res.status(400).json({ error: 'Missing signature' });
+    }
+
+    const rawBody = req.body instanceof Buffer
+      ? req.body.toString('utf8')
+      : JSON.stringify(req.body);
+
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.CASHFREE_SECRET_KEY)
+      .update(timestamp + rawBody)
+      .digest('base64');
+
+    if (signature !== expectedSignature) {
+      console.log('❌ Cashfree webhook signature mismatch — blocked');
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+
+    // ── Step 2: Parse event ───────────────────────────────────────────────────
+    const event = JSON.parse(rawBody);
+    console.log(`📦 Cashfree webhook: ${event.type}`);
+
+    if (event.type === 'PAYMENT_LINK_EVENT') {
+      const payment      = event.data?.payment;
+      const paymentLink  = event.data?.payment_link;
+      const notes        = paymentLink?.payment_link_notes || {};
+      const customer     = event.data?.customer_details || {};
+      const paymentId    = payment?.cf_payment_id?.toString();
+      const status       = payment?.payment_status;
+
+      // telegram_id comes from:
+      // 1. Dynamic links (API-created) — embedded in link_notes.telegram_id
+      // 2. Static links (dashboard-created) — user types it in "Telegram ID" field → customer_details.customer_id
+      const telegramId = notes.telegram_id || customer.customer_id;
+
+      if (!telegramId) {
+        console.log('⚠️ Cashfree webhook: no telegram_id found — log for manual review');
+        console.log('   Payment ID:', paymentId, '| Customer:', JSON.stringify(customer));
+        return res.status(200).json({ status: 'ok' });
+      }
+
+      if (status !== 'SUCCESS') {
+        console.log(`⚠️ Cashfree webhook: payment status is ${status} — skipping`);
+        return res.status(200).json({ status: 'ok' });
+      }
+
+      // Dedup
+      if (paymentId && processedPayments.has(paymentId)) {
+        console.log(`⚠️ Cashfree webhook: duplicate ${paymentId} — skipped`);
+        return res.status(200).json({ status: 'ok' });
+      }
+      if (paymentId) processedPayments.add(paymentId);
+
+      const planType   = notes.plan_type;
+      const linkName   = (paymentLink?.payment_link_id || paymentLink?.link_purpose || '').toLowerCase();
+      const isAnnual   = planType === 'annual'
+        || (payment?.payment_amount >= 499)
+        || linkName.includes('annual')
+        || linkName.includes('year');
+      const days       = isAnnual ? 365 : 30;
+
+      let user = await TelegramUser.findOne({ telegramId });
+      if (!user) {
+        user = new TelegramUser({ telegramId });
+        user.generateReferralCode();
+      }
+
+      const wasAlreadyPremium = user.plan === 'premium';
+      const now           = Date.now();
+      const currentExpiry = user.premiumEndDate ? new Date(user.premiumEndDate).getTime() : now;
+      const base          = currentExpiry > now ? currentExpiry : now;
+      user.plan             = 'premium';
+      user.premiumStartDate = user.premiumStartDate || new Date();
+      user.premiumEndDate   = new Date(base + days * 24 * 60 * 60 * 1000);
+      await user.save();
+
+      console.log(`✅ Cashfree Premium activated for Telegram ID: ${telegramId} | Payment: ${paymentId}`);
+
+      // Notify user
+      try {
+        await bot.sendMessage(
+          telegramId,
+          `🎉 *Premium Activated\\!*\n\n` +
+          `Welcome to VidVault Premium\\! ⭐\n\n` +
+          `✅ Unlimited downloads\n` +
+          `✅ 1080p \\+ 4K quality\n` +
+          `✅ Priority speed\n` +
+          `✅ Valid for *${days} days*${isAnnual ? ' 🏆' : ''}\n\n` +
+          `Just send any video link to start\\! 🎬`,
+          { parse_mode: 'MarkdownV2' }
+        );
+      } catch (err) {
+        console.error('Failed to notify user:', err.message);
+      }
+
+      // Notify admin
+      const adminId = process.env.TELEGRAM_ADMIN_ID;
+      if (adminId) {
+        try {
+          await bot.sendMessage(
+            adminId,
+            `💰 *New Cashfree Premium\\!*\n\n` +
+            `Telegram ID: \`${telegramId}\`\n` +
+            `Username: ${esc(notes.username || 'Unknown')}\n` +
+            `Payment ID: \`${paymentId || 'N/A'}\`\n` +
+            `Amount: ${isAnnual ? '₹499 \\(Annual\\)' : '₹79 \\(Monthly\\)'}\n` +
+            `Renewal: ${wasAlreadyPremium ? 'Yes ♻️' : 'No 🆕'}\n` +
+            `Status: Auto\\-activated ✅`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        } catch (err) {
+          console.error('Failed to notify admin:', err.message);
+        }
+      }
+    }
+
+    res.status(200).json({ status: 'ok' });
+
+  } catch (error) {
+    console.error('Cashfree webhook error:', error);
     res.status(500).json({ error: 'Internal error' });
   }
 });
