@@ -461,7 +461,7 @@ class VideoDownloaderService {
         format,
         downloadResult.downloadUrl,
         downloadResult.fileSize,
-        10 * 60, // 10 minutes
+        55 * 60, // 55 minutes
       );
 
       const downloadDuration = (
@@ -770,7 +770,7 @@ class VideoDownloaderService {
         format,
         downloadResult.downloadUrl,
         downloadResult.fileSize,
-        10 * 60,
+        55 * 60,
       );
 
       // ✅ THE ONLY FIX: Save to MongoDB ONLY on success (you only count completed!)
