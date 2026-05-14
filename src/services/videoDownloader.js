@@ -97,10 +97,10 @@ function isProxyConnError(stderr) {
 }
 
 // 🔥 CONSTANTS FOR PREMIUM SERVICE
-const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB hard limit
+const MAX_FILE_SIZE = 400 * 1024 * 1024; // 400MB hard limit
 const RECOMMENDED_QUALITY = "medium"; // 720p default
 const TEMP_FILE_MAX_AGE = 5 * 60 * 1000; // 5 minutes
-const R2_FILE_MAX_AGE = 60 * 60 * 1000; // 1 hour
+const R2_FILE_MAX_AGE = 6 * 60 * 60 * 1000; // 6 hours
 
 class VideoDownloaderService {
   constructor() {
@@ -1325,6 +1325,8 @@ class VideoDownloaderService {
       "3",
       "--file-access-retries",
       "5",
+      "--max-filesize",
+      "400m",
       "--js-runtimes",
       "node:/usr/local/bin/node",
       "--extractor-args",
@@ -1343,6 +1345,7 @@ class VideoDownloaderService {
   }
   estimateFileSize(durationSeconds, quality, platform = "generic") {
     if (!durationSeconds || durationSeconds <= 0) return 0;
+    if (durationSeconds > 3600) return MAX_FILE_SIZE + 1;
 
     // Real-world yt-dlp averages (BYTES/sec)
     const bitrateTable = {

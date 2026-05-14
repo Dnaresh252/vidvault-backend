@@ -24,7 +24,7 @@ class CacheService {
       metadata: 60 * 30, // 30 minutes - safe for Upstash free tier (10k cmd/day)
       thumbnail: 60 * 60 * 24 * 7, // 7 days for thumbnails
       directUrl: 60 * 60 * 6, // 6 hours for direct download URLs
-      r2Url: 55 * 60,
+      r2Url: 5.5 * 60 * 60,
       // 🔥 NEW: 10 minutes for R2 URLs (trending videos!)
     };
   }
