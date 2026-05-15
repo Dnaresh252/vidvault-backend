@@ -1,6 +1,8 @@
 const videoDownloader = require("../services/videoDownloader");
 const platformDetector = require("../services/platformDetector");
 const instantMetadataService = require("../services/instantMetadataService");
+const streamingService = require("../services/streamingService");
+const cacheService = require("../services/cacheService");
 const path = require("path");
 const fs = require("fs-extra");
 const fetch = require("node-fetch");
@@ -692,3 +694,66 @@ function getContentType(ext) {
   };
   return types[ext.toLowerCase()] || "application/octet-stream";
 }
+
+exports.streamVideo = async (req, res) => {
+  try {
+    const url = req.query.url;
+    const quality = req.query.quality || "high";
+    const format = req.query.format || "mp4";
+    const audioOnly = req.query.audioOnly === "true";
+
+    if (!url?.trim()) {
+      return res.status(400).json({ status: "error", message: "URL is required" });
+    }
+
+    // Step 1: Check R2 cache first — if hit, redirect instantly
+    const cached = await cacheService.getR2Url(url.trim(), quality, format);
+    if (cached && cached.url) {
+      console.log(`⚡ Stream cache HIT — redirecting to R2`);
+      return res.redirect(302, cached.url);
+    }
+
+    // Step 2: Get metadata for filename
+    let title = "video";
+    try {
+      const meta = await instantMetadataService.getInstantMetadata(url.trim());
+      title = meta?.data?.title || "video";
+    } catch (e) {
+      // use default title
+    }
+
+    // Step 3: Share in-progress streams (dedup)
+    const dedupKey = `stream:${url}:${quality}:${format}`;
+    if (streamingService.activeStreams.has(dedupKey)) {
+      console.log(`⚡ Stream dedup HIT — another user already streaming this`);
+    }
+
+    // Step 4: Connect R2 client from videoDownloader
+    streamingService.setR2Client(
+      videoDownloader.r2Client,
+      videoDownloader.r2Working
+    );
+
+    // Step 5: Stream to user
+    await streamingService.streamToResponse({
+      url: url.trim(),
+      quality,
+      format,
+      audioOnly,
+      title,
+      res,
+      onCached: (r2Url) => {
+        console.log(`☁️ Stream cached to R2 for next users: ${r2Url.slice(0, 60)}`);
+      },
+    });
+
+  } catch (error) {
+    console.error("❌ Stream controller error:", error.message);
+    if (!res.headersSent) {
+      res.status(500).json({
+        status: "error",
+        message: "Stream failed. Please try again.",
+      });
+    }
+  }
+};

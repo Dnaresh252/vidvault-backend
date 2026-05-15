@@ -323,7 +323,7 @@ setInterval(async () => {
 }, 30 * 60 * 1000);
 
 // ─── Initialize bot ───────────────────────────────────────
-const bot = new TelegramBot(TOKEN, { polling: true });
+const bot = new TelegramBot(TOKEN, { polling: false });
 console.log("🤖 VidVault Telegram Bot starting...");
 
 // ═══════════════════════════════════════════════════════════

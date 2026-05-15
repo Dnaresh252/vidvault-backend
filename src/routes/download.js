@@ -103,6 +103,9 @@ const statsLimiter = rateLimit({
 // ✅ Apply rate limiter to stats route
 router.get("/stats", statsLimiter, downloadController.getServerStats);
 
+// Mux streaming endpoint — streams video directly to browser
+router.get("/stream", downloadController.streamVideo);
+
 // ==================== 404 HANDLER ====================
 router.use((req, res) => {
   res.status(404).json({

@@ -119,7 +119,7 @@ class VideoDownloaderService {
 
     this.activeDownloads = new Map();
     this.inProgressDownloads = new Map();
-    this.maxConcurrentDownloads = 25;
+    this.maxConcurrentDownloads = 40;
     this.youtubeLastDownloadByIP = new Map();
 
     this.ensureDirectories();
