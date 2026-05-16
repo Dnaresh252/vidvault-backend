@@ -188,12 +188,24 @@ exports.downloadVideoWithProgress = async (req, res) => {
 
       if (!downloadResult.success) {
         if (!clientDisconnected) {
-          sendProgress({
-            step: 0,
-            status: "error",
-            message: downloadResult.error || "Download failed",
-            progress: 0,
-          });
+          if (downloadResult.code === "RETRY_SOON") {
+            sendProgress({
+              step: 3,
+              status: "retrying",
+              message: "⚡ Almost there! Preparing your video...",
+              progress: 45,
+              stage: "Preparing",
+              retryAfter: downloadResult.retryAfter || 8,
+              code: "RETRY_SOON",
+            });
+          } else {
+            sendProgress({
+              step: 0,
+              status: "error",
+              message: downloadResult.error || "Download failed",
+              progress: 0,
+            });
+          }
         }
         return res.end();
       }
@@ -284,10 +296,12 @@ exports.downloadVideo = async (req, res) => {
     });
 
     if (!downloadResult.success) {
-      return res.status(400).json({
+      const statusCode = downloadResult.code === "RETRY_SOON" ? 429 : 400;
+      return res.status(statusCode).json({
         status: "error",
         message: downloadResult.error,
         code: downloadResult.code,
+        retryAfter: downloadResult.retryAfter || 8,
       });
     }
 

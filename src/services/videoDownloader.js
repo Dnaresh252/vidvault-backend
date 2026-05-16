@@ -312,16 +312,30 @@ class VideoDownloaderService {
     } = options;
 
     if (this.activeDownloads.size >= this.maxConcurrentDownloads) {
-      console.log(`⏳ Queue: waiting for slot (active: ${this.activeDownloads.size}/${this.maxConcurrentDownloads})`);
-      await new Promise(resolve => {
-        const check = setInterval(() => {
-          if (this.activeDownloads.size < this.maxConcurrentDownloads) {
-            clearInterval(check);
-            resolve();
-          }
-        }, 500);
-        setTimeout(() => { clearInterval(check); resolve(); }, 60000);
-      });
+      const cached = await cacheService.getR2Url(url, quality, format);
+      if (cached && cached.url) {
+        console.log(`⚡ Queue bypass — instant cache hit`);
+        return {
+          success: true,
+          data: {
+            downloadUrl: cached.url,
+            fileSize: cached.fileSize || 0,
+            quality, format,
+            cached: true,
+            title: "Video",
+            thumbnail: null,
+            duration: 0,
+            platform: "Unknown",
+          },
+          message: "Ready instantly! ⚡",
+        };
+      }
+      return {
+        success: false,
+        error: "RETRY_SOON",
+        code: "RETRY_SOON",
+        retryAfter: 8,
+      };
     }
 
     const downloadId = crypto.randomBytes(8).toString("hex");
@@ -693,16 +707,30 @@ class VideoDownloaderService {
     } = options;
 
     if (this.activeDownloads.size >= this.maxConcurrentDownloads) {
-      console.log(`⏳ Queue: waiting for slot (active: ${this.activeDownloads.size}/${this.maxConcurrentDownloads})`);
-      await new Promise(resolve => {
-        const check = setInterval(() => {
-          if (this.activeDownloads.size < this.maxConcurrentDownloads) {
-            clearInterval(check);
-            resolve();
-          }
-        }, 500);
-        setTimeout(() => { clearInterval(check); resolve(); }, 60000);
-      });
+      const cached = await cacheService.getR2Url(url, quality, format);
+      if (cached && cached.url) {
+        console.log(`⚡ Queue bypass — instant cache hit`);
+        return {
+          success: true,
+          data: {
+            downloadUrl: cached.url,
+            fileSize: cached.fileSize || 0,
+            quality, format,
+            cached: true,
+            title: "Video",
+            thumbnail: null,
+            duration: 0,
+            platform: "Unknown",
+          },
+          message: "Ready instantly! ⚡",
+        };
+      }
+      return {
+        success: false,
+        error: "RETRY_SOON",
+        code: "RETRY_SOON",
+        retryAfter: 8,
+      };
     }
 
     const downloadId = crypto.randomBytes(8).toString("hex");
