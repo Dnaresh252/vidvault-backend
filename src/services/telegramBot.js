@@ -2287,7 +2287,7 @@ async function handleDownload(chatId, user, url, params) {
     const response = await axios.post(
       `${API_URL}/api/v1/download/video`,
       { url, quality, format },
-      { timeout: 180000 },
+      { timeout: 120000 },
     );
 
     if (response.data.status === "success") {
