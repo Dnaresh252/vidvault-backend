@@ -138,8 +138,8 @@ class InstantMetadataService {
       cookieManager.addCookieOptions(options, platform);
     }
 
-    // 🔥 FIXED: Instagram gets 30s timeout, others keep 15s
-    const timeoutMs = platform === "instagram" ? 30000 : 15000;
+    // 🔥 FIXED: Instagram gets 30s timeout, YouTube 20s, others 12s
+    const timeoutMs = platform === "instagram" ? 30000 : platform === "youtube" ? 20000 : 12000;
 
     const result = await Promise.race([
       this.ytDlp.execPromise([url, ...options]),

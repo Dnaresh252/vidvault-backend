@@ -4,6 +4,8 @@ const { PassThrough } = require("stream");
 const crypto = require("crypto");
 const cacheService = require("./cacheService");
 
+const JS_RUNTIME = process.platform === "win32" ? "node" : "node:/usr/local/bin/node";
+
 // Quality to format ID mapping
 const QUALITY_MAP = {
   highest: { video: "137", audio: "140", height: "1080" },
@@ -51,7 +53,7 @@ class StreamingService {
         "-f", formatStr,
         "--socket-timeout", "15",
         "--extractor-args", "youtube:player_client=web,default",
-        "--js-runtimes", "node:/usr/local/bin/node",
+        "--js-runtimes", JS_RUNTIME,
       ]);
 
       let output = "";

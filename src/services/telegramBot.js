@@ -395,7 +395,8 @@ setInterval(
 );
 
 // ─── Initialize bot ───────────────────────────────────────
-const bot = new TelegramBot(TOKEN, { polling: true });
+const isProduction = process.env.NODE_ENV === "production";
+const bot = new TelegramBot(TOKEN, { polling: isProduction });
 console.log("🤖 VidVault Telegram Bot starting...");
 
 // ═══════════════════════════════════════════════════════════

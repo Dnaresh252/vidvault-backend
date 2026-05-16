@@ -97,6 +97,7 @@ function isProxyConnError(stderr) {
 }
 
 // 🔥 CONSTANTS FOR PREMIUM SERVICE
+const JS_RUNTIME = process.platform === "win32" ? "node" : "node:/usr/local/bin/node";
 const MAX_FILE_SIZE = 400 * 1024 * 1024; // 400MB hard limit
 const RECOMMENDED_QUALITY = "medium"; // 720p default
 const TEMP_FILE_MAX_AGE = 5 * 60 * 1000; // 5 minutes
@@ -1328,7 +1329,7 @@ class VideoDownloaderService {
       "--max-filesize",
       "400m",
       "--js-runtimes",
-      "node:/usr/local/bin/node",
+      JS_RUNTIME,
       "--extractor-args",
       "youtube:player_client=web,default",
     );
@@ -1467,7 +1468,7 @@ class VideoDownloaderService {
         "--socket-timeout",
         "20",
         "--js-runtimes",
-        "node:/usr/local/bin/node",
+        JS_RUNTIME,
         "--extractor-args",
         "youtube:player_client=web,default",
       ];
