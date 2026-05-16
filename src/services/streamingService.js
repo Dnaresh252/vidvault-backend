@@ -75,7 +75,7 @@ class StreamingService {
       });
 
       proc.on("error", reject);
-      setTimeout(() => { proc.kill(); reject(new Error("URL extraction timeout")); }, 20000);
+      setTimeout(() => { proc.kill(); reject(new Error("URL extraction timeout")); }, 60000);
     });
   }
 
