@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     python3-dev \
     libssl-dev \
+    aria2 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv
