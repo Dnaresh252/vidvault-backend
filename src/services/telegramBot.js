@@ -2295,6 +2295,17 @@ async function handleDownload(chatId, user, url, params) {
   );
 
   try {
+    // Block videos longer than 1 hour — too large to process
+    const metadata = await fetchMetadata(url).catch(() => null);
+    if (metadata && metadata.duration && metadata.duration > 3600) {
+      activeUsers.delete(userId);
+      try { await bot.deleteMessage(chatId, processingMsg.message_id); } catch {}
+      await bot.sendMessage(chatId,
+        "⚠️ This video is too long (over 1 hour). Please try a shorter video under 60 minutes."
+      );
+      return;
+    }
+
     const response = await axios.post(
       `${API_URL}/api/v1/download/video`,
       { url, quality, format },

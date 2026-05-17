@@ -1358,6 +1358,8 @@ class VideoDownloaderService {
       "5",
       "--max-filesize",
       "400m",
+      "--match-filter",
+      "duration < 3600",
       "--js-runtimes",
       JS_RUNTIME,
       "--extractor-args",
