@@ -442,6 +442,15 @@ class VideoDownloaderService {
           (await instantMetadataService.getInstantMetadata(url)).data;
         console.log(`✓ Metadata: "${metadata.title}"`);
 
+        // Hard block — reject videos over 1 hour
+        if (metadata.duration && metadata.duration > 3600) {
+          return {
+            success: false,
+            error: "This video is too long. Maximum duration is 1 hour.",
+            code: "VIDEO_TOO_LONG",
+          };
+        }
+
         const estimatedSize = this.estimateFileSize(
           metadata.duration,
           quality,
@@ -792,6 +801,15 @@ class VideoDownloaderService {
         metadata =
           prefetchedMetadata ||
           (await instantMetadataService.getInstantMetadata(url)).data;
+
+        // Hard block — reject videos over 1 hour
+        if (metadata.duration && metadata.duration > 3600) {
+          return {
+            success: false,
+            error: "This video is too long. Maximum duration is 1 hour.",
+            code: "VIDEO_TOO_LONG",
+          };
+        }
 
         const estimatedSize = this.estimateFileSize(
           metadata.duration,
@@ -1358,8 +1376,6 @@ class VideoDownloaderService {
       "5",
       "--max-filesize",
       "400m",
-      "--match-filter",
-      "duration < 3600",
       "--js-runtimes",
       JS_RUNTIME,
       "--extractor-args",
