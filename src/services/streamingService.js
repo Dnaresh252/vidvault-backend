@@ -170,6 +170,16 @@ class StreamingService {
 
       this.activeStreams.set(streamId, { ffmpeg, startTime: Date.now() });
 
+      // Auto-kill ffmpeg after 10 minutes max
+      const maxTimer = setTimeout(() => {
+        console.log(`⏰ [${streamId}] FFmpeg timeout — killing`);
+        ffmpeg.kill("SIGKILL");
+      }, 10 * 60 * 1000);
+
+      ffmpeg.on("close", () => {
+        clearTimeout(maxTimer);
+      });
+
       // Step 4: Pipe to user + R2 simultaneously
       const passThrough = new PassThrough();
       ffmpeg.stdout.pipe(passThrough);
@@ -212,7 +222,7 @@ class StreamingService {
         ffmpeg.on("error", reject);
         res.on("close", () => {
           console.log(`📡 [${streamId}] Client disconnected — killing FFmpeg`);
-          ffmpeg.kill("SIGTERM");
+          ffmpeg.kill("SIGKILL");
           this.activeStreams.delete(streamId);
           resolve();
         });

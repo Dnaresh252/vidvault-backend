@@ -971,6 +971,16 @@ class VideoDownloaderService {
       await new Promise((resolve, reject) => {
         const ytDlpProcess = spawn("yt-dlp", [url, ...ytDlpArgs]);
 
+        // Auto-kill yt-dlp after 10 minutes max
+        const maxTimer = setTimeout(() => {
+          console.log(`⏰ [${downloadId}] yt-dlp timeout — killing`);
+          ytDlpProcess.kill("SIGKILL");
+        }, 10 * 60 * 1000);
+
+        ytDlpProcess.on("close", () => {
+          clearTimeout(maxTimer);
+        });
+
         ytDlpProcess.stdout.on("data", (data) => {
           const output = data.toString();
 
