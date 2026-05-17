@@ -395,8 +395,19 @@ setInterval(
 );
 
 // ─── Initialize bot ───────────────────────────────────────
-const isProduction = process.env.NODE_ENV === "production";
-const bot = new TelegramBot(TOKEN, { polling: isProduction });
+if (process.env.DISABLE_TELEGRAM === "true") {
+  console.log("🤖 Telegram Bot disabled for this worker");
+  module.exports = null;
+  return;
+}
+
+const bot = new TelegramBot(TOKEN, {
+  polling: {
+    interval: 2000,
+    autoStart: true,
+    params: { timeout: 10 }
+  }
+});
 console.log("🤖 VidVault Telegram Bot starting...");
 
 // ═══════════════════════════════════════════════════════════
