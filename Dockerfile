@@ -1,6 +1,6 @@
 # Force rebuild - Python 3.9 compatible
 FROM node:20-slim
-ARG CACHEBUST=20260517-aria2c
+ARG CACHEBUST=20260517-nosleep
 
 RUN apt-get update && apt-get install -y \
     python3 \
@@ -29,10 +29,7 @@ RUN pip install --no-cache-dir bgutil-ytdlp-pot-provider
 RUN pip install --no-cache-dir gallery-dl
 RUN gallery-dl --version
 
-RUN echo "--js-runtimes node:/usr/local/bin/node" > /etc/yt-dlp.conf && \
-    echo "--sleep-requests 3" >> /etc/yt-dlp.conf && \
-    echo "--sleep-interval 2" >> /etc/yt-dlp.conf && \
-    echo "--max-sleep-interval 5" >> /etc/yt-dlp.conf
+RUN echo "--js-runtimes node:/usr/local/bin/node" > /etc/yt-dlp.conf
 # Verify node is accessible
 RUN node --version && yt-dlp --version
 ARG CACHEBUST=20260506-sleep-fix
