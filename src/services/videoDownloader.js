@@ -1341,6 +1341,8 @@ class VideoDownloaderService {
     // ✅ UNIVERSAL FLAGS - ALL PLATFORMS
     // ============================================
     options.push(
+      "--downloader", "aria2c",
+      "--downloader-args", "aria2c:-x 16 -k 1M --file-allocation=none --console-log-level=warn",
       "--no-playlist",
       "--socket-timeout",
       "30",
