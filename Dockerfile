@@ -1,6 +1,6 @@
 # Force rebuild - Python 3.9 compatible
 FROM node:20-slim
-ARG CACHEBUST=20260508-nopuppeteer
+ARG CACHEBUST=20260517-aria2c
 
 RUN apt-get update && apt-get install -y \
     python3 \
