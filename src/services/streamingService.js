@@ -121,6 +121,25 @@ class StreamingService {
       onCached,
     } = options;
 
+    // Hard block — reject videos over 1 hour
+    try {
+      const instantMetadataService = require('./instantMetadataService');
+      const meta = await instantMetadataService.getInstantMetadata(url);
+      if (meta?.data?.duration && meta.data.duration > 3600) {
+        console.log(`🚫 Stream blocked — video too long: ${meta.data.duration}s`);
+        if (!res.headersSent) {
+          res.status(400).json({
+            status: "error",
+            message: "This video is too long. Maximum duration is 1 hour.",
+            code: "VIDEO_TOO_LONG"
+          });
+        }
+        return;
+      }
+    } catch (e) {
+      // metadata check failed — continue
+    }
+
     const streamId = crypto.randomBytes(8).toString("hex");
     console.log(`🌊 [${streamId}] Starting mux stream: ${quality} ${format}`);
 
