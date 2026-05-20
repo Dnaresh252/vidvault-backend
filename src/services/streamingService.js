@@ -63,20 +63,13 @@ class StreamingService {
       proc.stderr.on("data", d => { stderr += d.toString(); });
 
       proc.on("close", code => {
-        if (code !== 0 || !output.trim()) {
-          if (stderr.includes("No title found") && output.trim()) {
-            // Title missing but URL extracted — still works
-            console.log(`⚠️ [${streamId}] Title missing but URL found — continuing`);
-          } else {
-            return reject(new Error("Failed to extract URLs: " + stderr.slice(0, 200)));
-          }
-        }
         const urls = output.trim().split("\n").filter(Boolean);
-        resolve({
-          videoUrl: urls[0],
-          audioUrl: urls[1] || null, // null for pre-merged (format 18)
-          isMerged: urls.length === 1,
-        });
+        if (urls.length > 0 && urls[0].startsWith("http")) {
+          return resolve({ videoUrl: urls[0], audioUrl: urls[1] || null, isMerged: urls.length === 1 });
+        }
+        if (code !== 0 || !output.trim()) {
+          return reject(new Error("Failed to extract URLs: " + stderr.slice(0, 200)));
+        }
       });
 
       proc.on("error", reject);
