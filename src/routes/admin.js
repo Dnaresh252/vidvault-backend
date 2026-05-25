@@ -158,7 +158,11 @@ router.get("/download-stats", adminAuth, async (req, res) => {
   try {
     const Download = require("../models/Download");
     const now = new Date();
-    const last24h = new Date(now - 24 * 60 * 60 * 1000);
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istNow = new Date(now.getTime() + istOffset);
+    const istMidnight = new Date(istNow);
+    istMidnight.setUTCHours(0, 0, 0, 0);
+    const last24h = new Date(istMidnight.getTime() - istOffset);
     const last7d = new Date(now - 7 * 24 * 60 * 60 * 1000);
     const [total, today, last7days, byPlatform, byFormat, byQuality, failed] = await Promise.all([
       Download.countDocuments({ status: "completed" }),
