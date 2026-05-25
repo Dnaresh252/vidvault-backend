@@ -182,7 +182,7 @@ router.get("/hourly", adminAuth, async (req, res) => {
     const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const data = await Download.aggregate([
       { $match: { status: "completed", createdAt: { $gte: last24h } } },
-      { $group: { _id: { $hour: "$createdAt" }, count: { $sum: 1 } } },
+      { $group: { _id: { $hour: { date: "$createdAt", timezone: "Asia/Kolkata" } }, count: { $sum: 1 } } },
       { $sort: { "_id": 1 } },
     ]);
     res.json({ hourly: data });
