@@ -67,6 +67,29 @@ app.use(
   }),
 );
 
+// In-process log buffer for /admin/logs (captures all console.log/error output)
+global.adminLogs = [];
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+console.log = (...args) => {
+  const line = args.join(" ");
+  global.adminLogs.push({
+    line,
+    type: line.includes("✗") || line.includes("Failed") || line.includes("Error") ? "error" :
+          line.includes("✓") || line.includes("INSTANT") || line.includes("HIT") ? "success" :
+          line.includes("⚠") || line.includes("cookie") || line.includes("rate") ? "warning" : "info",
+    time: new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
+  });
+  if (global.adminLogs.length > 500) global.adminLogs.shift();
+  originalConsoleLog(...args);
+};
+console.error = (...args) => {
+  const line = args.join(" ");
+  global.adminLogs.push({ line, type: "error", time: new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }) });
+  if (global.adminLogs.length > 500) global.adminLogs.shift();
+  originalConsoleError(...args);
+};
+
 // Compression and parsing
 app.use(compression());
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));

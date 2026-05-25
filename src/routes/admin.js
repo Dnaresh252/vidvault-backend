@@ -191,15 +191,24 @@ router.get("/hourly", adminAuth, async (req, res) => {
   }
 });
 
-// GET /admin/containers — container status
+// GET /admin/containers — container status via health check ping
 router.get("/containers", adminAuth, (req, res) => {
-  exec("sudo docker ps --format '{{.Names}}|{{.Status}}|{{.Image}}' 2>/dev/null", (err, stdout) => {
-    const containers = stdout.trim().split("\n").filter(Boolean).map(line => {
-      const [name, status, image] = line.split("|");
-      return { name, status, image, healthy: status?.includes("Up") };
-    });
-    res.json({ containers });
-  });
+  const containers = [
+    { name: "vidvault-backend",  port: 5000 },
+    { name: "vidvault-worker-2", port: 5001 },
+    { name: "vidvault-worker-3", port: 5002 },
+    { name: "vidvault-worker-4", port: 5003 },
+  ];
+  const checks = containers.map(c =>
+    new Promise(resolve => {
+      exec(`curl -s --max-time 3 http://localhost:${c.port}/health`, (err, stdout) => {
+        let healthy = false;
+        try { healthy = JSON.parse(stdout)?.status === "healthy"; } catch {}
+        resolve({ ...c, healthy, status: healthy ? "Up" : "Down" });
+      });
+    })
+  );
+  Promise.all(checks).then(results => res.json({ containers: results }));
 });
 
 // POST /admin/restart — restart all containers
@@ -253,18 +262,10 @@ router.post("/cookies/test", adminAuth, (req, res) => {
   );
 });
 
-// GET /admin/logs — last 100 lines from backend container
+// GET /admin/logs — last 100 lines from in-process log buffer
 router.get("/logs", adminAuth, (req, res) => {
-  exec("sudo docker logs --tail 100 vidvault-backend 2>&1", (err, stdout) => {
-    const lines = stdout.trim().split("\n").filter(Boolean).map(line => {
-      let type = "info";
-      if (line.includes("✗") || line.includes("Failed") || line.includes("error") || line.includes("Error")) type = "error";
-      else if (line.includes("✓") || line.includes("INSTANT") || line.includes("cache HIT")) type = "success";
-      else if (line.includes("⚠") || line.includes("rate.limit") || line.includes("cookie")) type = "warning";
-      return { line, type };
-    });
-    res.json({ logs: lines });
-  });
+  const logLines = global.adminLogs || [];
+  res.json({ logs: logLines.slice(-100) });
 });
 
 // GET /admin/7days — day-by-day breakdown in IST
