@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { exec } = require("child_process");
+const { exec, execSync } = require("child_process");
 const fs = require("fs-extra");
 const path = require("path");
 const os = require("os");
@@ -27,6 +27,24 @@ router.get("/stats", adminAuth, async (req, res) => {
     const cacheService = require("../services/cacheService");
     const stats = videoDownloader.getServerStats();
     const redisPing = await cacheService.ping();
+
+    let disk = { used: 0, total: 0, percent: 0 };
+    let swap = { used: 0, total: 0, percent: 0 };
+    try {
+      const diskOut = execSync("df / | tail -1").toString().trim().split(/\s+/);
+      disk = {
+        total: parseInt(diskOut[1]) * 1024,
+        used: parseInt(diskOut[2]) * 1024,
+        percent: parseInt(diskOut[4]),
+      };
+      const swapOut = execSync("free -b | grep Swap").toString().trim().split(/\s+/);
+      swap = {
+        total: parseInt(swapOut[1]),
+        used: parseInt(swapOut[2]),
+        percent: swapOut[1] > 0 ? Math.round((swapOut[2] / swapOut[1]) * 100) : 0,
+      };
+    } catch (e) {}
+
     res.json({
       status: "ok",
       ram: {
@@ -40,6 +58,8 @@ router.get("/stats", adminAuth, async (req, res) => {
         model: cpus[0]?.model,
       },
       uptime,
+      disk,
+      swap,
       downloads: {
         active: stats.activeDownloads,
         maxConcurrent: stats.maxConcurrent,
@@ -166,6 +186,103 @@ router.get("/hourly", adminAuth, async (req, res) => {
       { $sort: { "_id": 1 } },
     ]);
     res.json({ hourly: data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /admin/containers — container status
+router.get("/containers", adminAuth, (req, res) => {
+  exec("sudo docker ps --format '{{.Names}}|{{.Status}}|{{.Image}}' 2>/dev/null", (err, stdout) => {
+    const containers = stdout.trim().split("\n").filter(Boolean).map(line => {
+      const [name, status, image] = line.split("|");
+      return { name, status, image, healthy: status?.includes("Up") };
+    });
+    res.json({ containers });
+  });
+});
+
+// POST /admin/restart — restart all containers
+router.post("/restart", adminAuth, (req, res) => {
+  exec("sudo docker restart vidvault-backend vidvault-worker-2 vidvault-worker-3 vidvault-worker-4", (err) => {
+    res.json({ status: "ok", message: "All containers restarting" });
+  });
+});
+
+// POST /admin/restart/:container — restart individual container
+router.post("/restart/:container", adminAuth, (req, res) => {
+  const allowed = ["vidvault-backend", "vidvault-worker-2", "vidvault-worker-3", "vidvault-worker-4"];
+  const { container } = req.params;
+  if (!allowed.includes(container)) return res.status(400).json({ error: "Invalid container" });
+  exec(`sudo docker restart ${container}`, (err, stdout) => {
+    res.json({ status: "ok", message: `${container} restarted` });
+  });
+});
+
+// POST /admin/rebuild — rebuild no cache
+router.post("/rebuild", adminAuth, (req, res) => {
+  res.json({ status: "ok", message: "Rebuild started — takes 5-10 minutes" });
+  exec("cd /opt/vidvault && git pull origin main && sudo docker build --no-cache -t vidvault-backend:latest . && sudo docker restart vidvault-backend vidvault-worker-2 vidvault-worker-3 vidvault-worker-4", (err) => {
+    console.log(err ? "Rebuild failed:" + err.message : "Rebuild complete");
+  });
+});
+
+// POST /admin/cookies/rotate — force rotate YouTube cookie
+router.post("/cookies/rotate", adminAuth, (req, res) => {
+  try {
+    const cookieManager = require("../services/cookieManager");
+    cookieManager.switchYouTubeCookie();
+    res.json({ status: "ok", message: "YouTube cookie rotated" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /admin/cookies/test — test cookie health
+router.post("/cookies/test", adminAuth, (req, res) => {
+  exec(
+    `sudo docker exec vidvault-backend yt-dlp --cookies /tmp/cookies/youtube_cookies.txt --dump-json --no-playlist --socket-timeout 10 "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>&1 | tail -1`,
+    { timeout: 30000 },
+    (err, stdout) => {
+      const working = stdout.includes("title") || stdout.includes("id");
+      res.json({
+        status: working ? "healthy" : "issue",
+        message: working ? "YouTube cookies working!" : "Cookie may be expired",
+      });
+    }
+  );
+});
+
+// GET /admin/logs — last 100 lines from backend container
+router.get("/logs", adminAuth, (req, res) => {
+  exec("sudo docker logs --tail 100 vidvault-backend 2>&1", (err, stdout) => {
+    const lines = stdout.trim().split("\n").filter(Boolean).map(line => {
+      let type = "info";
+      if (line.includes("✗") || line.includes("Failed") || line.includes("error") || line.includes("Error")) type = "error";
+      else if (line.includes("✓") || line.includes("INSTANT") || line.includes("cache HIT")) type = "success";
+      else if (line.includes("⚠") || line.includes("rate.limit") || line.includes("cookie")) type = "warning";
+      return { line, type };
+    });
+    res.json({ logs: lines });
+  });
+});
+
+// GET /admin/7days — day-by-day breakdown in IST
+router.get("/7days", adminAuth, async (req, res) => {
+  try {
+    const Download = require("../models/Download");
+    const last7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const data = await Download.aggregate([
+      { $match: { status: "completed", createdAt: { $gte: last7d } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+    res.json({ days: data });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
