@@ -166,6 +166,8 @@ class InstantMetadataService {
       uploadDate: this.parseDate(raw.upload_date),
       uploader: raw.uploader || "Unknown",
       uploaderVerified: raw.uploader_verified || false,
+      is_live: raw.is_live || false,
+      live_status: raw.live_status || null,
       availableFormats: this.parseAvailableFormats(raw),
       webpageUrl: raw.webpage_url || url,
     };

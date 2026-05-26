@@ -137,6 +137,13 @@ class StreamingService {
         }
         return;
       }
+      if (meta?.data?.is_live || meta?.data?.live_status === "is_live" || meta?.data?.duration === 0) {
+        console.log(`🚫 Stream blocked — live stream`);
+        if (!res.headersSent) {
+          res.status(400).json({ status: "error", message: "Live streams cannot be downloaded.", code: "LIVE_STREAM" });
+        }
+        return;
+      }
     } catch (e) {
       // metadata check failed — continue
     }

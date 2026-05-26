@@ -450,6 +450,13 @@ class VideoDownloaderService {
             code: "VIDEO_TOO_LONG",
           };
         }
+        if (metadata.is_live || metadata.live_status === "is_live" || metadata.live_status === "post_live" || metadata.duration === 0) {
+          return {
+            success: false,
+            error: "Live streams and premieres cannot be downloaded.",
+            code: "LIVE_STREAM",
+          };
+        }
 
         const estimatedSize = this.estimateFileSize(
           metadata.duration,
@@ -808,6 +815,13 @@ class VideoDownloaderService {
             success: false,
             error: "This video is too long. Maximum duration is 1 hour.",
             code: "VIDEO_TOO_LONG",
+          };
+        }
+        if (metadata.is_live || metadata.live_status === "is_live" || metadata.live_status === "post_live" || metadata.duration === 0) {
+          return {
+            success: false,
+            error: "Live streams and premieres cannot be downloaded.",
+            code: "LIVE_STREAM",
           };
         }
 
@@ -1369,6 +1383,8 @@ class VideoDownloaderService {
     // ✅ UNIVERSAL FLAGS - ALL PLATFORMS
     // ============================================
     options.push(
+      "--match-filter",
+      "!is_live & live_status != is_live",
       "--downloader", "aria2c",
       "--downloader-args", "aria2c:-x 16 -k 1M --file-allocation=none --console-log-level=warn",
       "--no-playlist",
