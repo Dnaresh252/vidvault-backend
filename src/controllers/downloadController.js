@@ -724,6 +724,13 @@ exports.streamVideo = async (req, res) => {
     const cached = await cacheService.getR2Url(url.trim(), quality, format);
     if (cached && cached.url) {
       console.log(`⚡ Stream cache HIT — redirecting to R2`);
+      try {
+        await Download.findOneAndUpdate(
+          { originalUrl: url.trim() },
+          { $inc: { cacheHitCount: 1 } },
+          { sort: { createdAt: -1 } }
+        );
+      } catch (e) { /* non-critical */ }
       return res.redirect(302, cached.url);
     }
 
@@ -756,8 +763,22 @@ exports.streamVideo = async (req, res) => {
       audioOnly,
       title,
       res,
-      onCached: (r2Url) => {
+      onCached: async (r2Url) => {
         console.log(`☁️ Stream cached to R2 for next users: ${r2Url.slice(0, 60)}`);
+        try {
+          const detection = platformDetector.detectPlatform(url.trim());
+          await Download.create({
+            originalUrl: url.trim(),
+            platform: detection.platform || "youtube",
+            videoId: detection.videoId || url.trim(),
+            status: "completed",
+            requestedQuality: quality,
+            requestedFormat: format,
+            cached: false,
+            processingStartTime: new Date(),
+            processingEndTime: new Date(),
+          });
+        } catch (e) { /* non-critical */ }
       },
     });
 
