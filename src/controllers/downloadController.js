@@ -645,13 +645,22 @@ exports.getServerStats = async (req, res) => {
     const cacheTTL = Math.min(300, Math.max(1, secondsUntilISTMidnight));
     res.set("Cache-Control", `public, max-age=${cacheTTL}`);
 
-    const [totalDownloads, downloadsToday] = await Promise.all([
+    const [totalDownloads, downloadsToday, cacheHitsAll, cacheHitsToday] = await Promise.all([
       Download.countDocuments({ status: "completed" }),
       Download.countDocuments({
         status: "completed",
         createdAt: { $gte: startOfTodayIST },
       }),
+      Download.aggregate([
+        { $group: { _id: null, total: { $sum: "$cacheHitCount" } } }
+      ]),
+      Download.aggregate([
+        { $match: { updatedAt: { $gte: startOfTodayIST } } },
+        { $group: { _id: null, total: { $sum: "$cacheHitCount" } } }
+      ]),
     ]);
+    const totalCacheHits = cacheHitsAll[0]?.total || 0;
+    const todayCacheHits = cacheHitsToday[0]?.total || 0;
 
     let serverStats = {
       activeDownloads: 0,
@@ -677,9 +686,9 @@ exports.getServerStats = async (req, res) => {
     res.status(200).json({
       status: "success",
       data: {
-        totalDownloads: totalDownloads || 0,
+        totalDownloads: (totalDownloads || 0) + totalCacheHits,
         platformsSupported: 25,
-        downloadsToday: downloadsToday || 0,
+        downloadsToday: (downloadsToday || 0) + todayCacheHits,
         activeDownloads: serverStats.activeDownloads,
         maxConcurrent: serverStats.maxConcurrent,
         uptime: serverStats.uptime,
