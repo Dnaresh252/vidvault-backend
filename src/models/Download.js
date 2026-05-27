@@ -122,6 +122,8 @@ const downloadSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    cached: { type: Boolean, default: false },
+    cacheHitCount: { type: Number, default: 0, min: 0 },
 
     // Anonymous tracking (no personal data)
     userIP: String, // Hashed for privacy

@@ -388,6 +388,14 @@ class VideoDownloaderService {
           `✓ [${downloadId}] Served instantly in ${downloadDuration}s`,
         );
 
+        try {
+          await Download.findOneAndUpdate(
+            { originalUrl: url },
+            { $inc: { cacheHitCount: 1 } },
+            { sort: { createdAt: -1 } }
+          );
+        } catch (e) { /* non-critical */ }
+
         return {
           success: true,
           data: {
@@ -782,6 +790,14 @@ class VideoDownloaderService {
         } catch (e) {
           metadata = { title: "Video", thumbnail: null, duration: 0 };
         }
+
+        try {
+          await Download.findOneAndUpdate(
+            { originalUrl: url },
+            { $inc: { cacheHitCount: 1 } },
+            { sort: { createdAt: -1 } }
+          );
+        } catch (e) { /* non-critical */ }
 
         return {
           success: true,
