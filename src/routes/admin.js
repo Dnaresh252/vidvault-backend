@@ -164,7 +164,7 @@ router.get("/download-stats", adminAuth, async (req, res) => {
     istMidnight.setUTCHours(0, 0, 0, 0);
     const last24h = new Date(istMidnight.getTime() - istOffset);
     const last7d = new Date(now - 7 * 24 * 60 * 60 * 1000);
-    const [total, today, last7days, byPlatform, byFormat, byQuality, failed] = await Promise.all([
+    const [total, today, last7days, byPlatform, byFormat, byQuality, failed, cacheHits] = await Promise.all([
       Download.countDocuments({ status: "completed" }),
       Download.countDocuments({ status: "completed", createdAt: { $gte: last24h } }),
       Download.countDocuments({ status: "completed", createdAt: { $gte: last7d } }),
@@ -172,8 +172,14 @@ router.get("/download-stats", adminAuth, async (req, res) => {
       Download.aggregate([{ $match: { status: "completed" } }, { $group: { _id: "$requestedFormat", count: { $sum: 1 } } }]),
       Download.aggregate([{ $match: { status: "completed" } }, { $group: { _id: "$requestedQuality", count: { $sum: 1 } } }]),
       Download.countDocuments({ status: "failed", createdAt: { $gte: last24h } }),
+      Download.aggregate([{ $group: { _id: null, total: { $sum: "$cacheHitCount" } } }]),
     ]);
-    res.json({ total, today, last7days, byPlatform, byFormat, byQuality, failed, successRate: Math.round((today / (today + failed)) * 100) || 100 });
+    res.json({
+      total, today, last7days, byPlatform, byFormat, byQuality, failed,
+      successRate: Math.round((today / (today + failed)) * 100) || 100,
+      cacheHits: cacheHits[0]?.total || 0,
+      cacheHitRate: cacheHits[0]?.total ? Math.round((cacheHits[0].total / (total + cacheHits[0].total)) * 100) : 0,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
