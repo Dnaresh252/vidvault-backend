@@ -212,47 +212,47 @@ class VideoDownloaderService {
     }
   }
 
-  // 🔥 OPTIMIZED: R2 cleanup every 10 min, delete files >1 hour
   startR2CleanupJob() {
-    const CLEANUP_INTERVAL = 10 * 60 * 1000;
-
-    setInterval(async () => {
+    const runCleanup = async () => {
       if (!this.r2Client || !this.r2Working) return;
-
       try {
-        const listCommand = new ListObjectsV2Command({
-          Bucket: process.env.R2_BUCKET_NAME,
-          Prefix: "downloads/",
-        });
-
-        const response = await this.r2Client.send(listCommand);
-        if (!response.Contents || response.Contents.length === 0) return;
-
-        const now = Date.now();
+        let continuationToken = undefined;
         let deletedCount = 0;
-
-        for (const file of response.Contents) {
-          const fileAge = now - file.LastModified.getTime();
-          if (fileAge > R2_FILE_MAX_AGE) {
-            await this.r2Client.send(
-              new DeleteObjectCommand({
-                Bucket: process.env.R2_BUCKET_NAME,
-                Key: file.Key,
-              }),
-            );
-            deletedCount++;
+        let checkedCount = 0;
+        const now = Date.now();
+        do {
+          const response = await this.r2Client.send(new ListObjectsV2Command({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Prefix: "downloads/",
+            MaxKeys: 1000,
+            ContinuationToken: continuationToken,
+          }));
+          if (!response.Contents || response.Contents.length === 0) break;
+          checkedCount += response.Contents.length;
+          for (const file of response.Contents) {
+            const fileAge = now - new Date(file.LastModified).getTime();
+            if (fileAge > R2_FILE_MAX_AGE) {
+              try {
+                await this.r2Client.send(new DeleteObjectCommand({
+                  Bucket: process.env.R2_BUCKET_NAME,
+                  Key: file.Key,
+                }));
+                deletedCount++;
+              } catch (delErr) {
+                console.error(`❌ R2 delete failed: ${file.Key}: ${delErr.message}`);
+              }
+            }
           }
-        }
-
-        if (deletedCount > 0) {
-          console.log(`🧹 R2: Deleted ${deletedCount} old files (>1hr)`);
-        }
+          continuationToken = response.NextContinuationToken;
+        } while (continuationToken);
+        console.log(`🧹 R2 cleanup: checked ${checkedCount}, deleted ${deletedCount} files`);
       } catch (error) {
-        console.error("R2 cleanup error:", error.message);
+        console.error("❌ R2 cleanup error:", error.message);
       }
-    }, CLEANUP_INTERVAL);
-
-    console.log(`✅ R2 cleanup: Every 10min, deletes files >1hr`);
+    };
+    setTimeout(runCleanup, 2 * 60 * 1000);
+    setInterval(runCleanup, 10 * 60 * 1000);
+    console.log(`✅ R2 cleanup: runs after 2min, then every 10min with pagination`);
   }
 
   // 🔥 OPTIMIZED: Aggressive temp cleanup every 3 min, delete files >5 min
@@ -514,7 +514,7 @@ class VideoDownloaderService {
             format,
             result.downloadUrl,
             result.fileSize,
-            55 * 60, // 55 minutes
+            5.5 * 60 * 60, // 5.5 hours
           );
           return result;
         } finally {
@@ -880,7 +880,7 @@ class VideoDownloaderService {
             format,
             result.downloadUrl,
             result.fileSize,
-            55 * 60,
+            5.5 * 60 * 60, // 5.5 hours
           );
           return result;
         } finally {
