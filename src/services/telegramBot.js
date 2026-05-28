@@ -497,33 +497,41 @@ async function createRazorpayLink(user, plan = "monthly", extraNotes = {}) {
   const keyId = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
   const isAnnual = plan === "annual";
+  const amountPaise = isAnnual ? ANNUAL_PRICE_INR * 100 : MONTHLY_PRICE_INR * 100;
+
   if (!keyId || !keySecret || keyId === "your_razorpay_key_id") {
+    console.warn(`⚠️ Razorpay keys not configured — using static fallback link (${plan})`);
     return isAnnual ? ANNUAL_PAYMENT_LINK : PAYMENT_LINK;
   }
+
   try {
     const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
     const res = await axios.post(
       "https://api.razorpay.com/v1/payment_links",
       {
-        amount: isAnnual ? ANNUAL_PRICE_INR * 100 : MONTHLY_PRICE_INR * 100,
+        amount: amountPaise,
         currency: "INR",
         description: isAnnual
           ? `VidVault Premium — 1 Year Unlimited Downloads (Save ₹${MONTHLY_PRICE_INR * 12 - ANNUAL_PRICE_INR})`
           : "VidVault Premium — 1 Month Unlimited Downloads",
         notes: {
-          telegram_id: user.telegramId,
+          telegram_id: String(user.telegramId),
           username: user.username || user.firstName || "user",
           plan_type: plan,
           ...extraNotes,
         },
         reminder_enable: false,
-        expire_by: Math.floor(Date.now() / 1000) + 3600,
+        expire_by: Math.floor(Date.now() / 1000) + 86400,
       },
-      { headers: { Authorization: `Basic ${auth}` }, timeout: 5000 },
+      { headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" }, timeout: 8000 },
     );
+    console.log(`✅ Razorpay ${plan} link created for ${user.telegramId}: ${res.data.short_url}`);
     return res.data.short_url;
   } catch (err) {
-    console.error("Razorpay link creation failed:", err.message);
+    const status = err.response?.status;
+    const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    console.error(`❌ Razorpay link creation failed [${plan}] status=${status}: ${detail}`);
+    console.error(`   Key ID prefix: ${keyId?.substring(0, 12)}... | Amount: ${amountPaise} paise | User: ${user.telegramId}`);
     return isAnnual ? ANNUAL_PAYMENT_LINK : PAYMENT_LINK;
   }
 }
