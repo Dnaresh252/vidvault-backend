@@ -2343,6 +2343,15 @@ async function handleDownload(chatId, user, url, params) {
 
       if (directRes.data?.status === "success" && directRes.data?.url) {
         const directUrl = directRes.data.url;
+        const fileSize = directRes.data.fileSize || 0;
+
+        // Check file size — Telegram limit is 50MB
+        // If over 50MB or unknown size, fall through to normal R2 flow
+        if (fileSize > 50 * 1024 * 1024) {
+          console.log(`📦 File too large for direct send (${(fileSize / 1024 / 1024).toFixed(1)}MB) — using R2 flow`);
+          throw new Error("File too large for direct send");
+        }
+
         const sourceEmoji = directRes.data.cached ? "⚡" : "🚀";
 
         // Delete processing message

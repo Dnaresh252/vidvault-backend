@@ -751,11 +751,26 @@ exports.getDirectDownloadUrl = async (req, res) => {
         });
       } catch (e) { /* non-critical */ }
 
+      let fileSize = 0;
+      try {
+        const https = require("https");
+        await new Promise((resolve) => {
+          const req = https.request(directUrl, { method: "HEAD" }, (headRes) => {
+            fileSize = parseInt(headRes.headers["content-length"] || "0");
+            resolve();
+          });
+          req.on("error", resolve);
+          req.setTimeout(5000, () => { req.destroy(); resolve(); });
+          req.end();
+        });
+      } catch (e) {}
+
       return res.json({
         status: "success",
         url: directUrl,
         cached: false,
         source: "cdn",
+        fileSize,
         expiresIn: 3600,
       });
     }
