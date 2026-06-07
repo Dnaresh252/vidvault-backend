@@ -2334,47 +2334,54 @@ async function handleDownload(chatId, user, url, params) {
       return;
     }
 
-    // Try direct URL first — instant, zero storage
+    // Try direct URL first — send as Telegram file
     try {
       const directRes = await axios.get(`${API_URL}/api/v1/download/direct-url`, {
         params: { url, quality, format },
         timeout: 25000,
       });
+
       if (directRes.data?.status === "success" && directRes.data?.url) {
+        const directUrl = directRes.data.url;
         const sourceEmoji = directRes.data.cached ? "⚡" : "🚀";
-        const sourceText = directRes.data.cached ? "Instant (cached)" : "Direct CDN";
 
-        user.downloadsThisMonth += 1;
-        user.totalDownloads += 1;
-        user.lastDownloadAt = new Date();
-        if (isTaste) user.hasUsed4KTaste = true;
-        const { incremented, milestone } = updateStreak(user);
-        await user.save();
-        if (milestone) {
-          applyStreakMilestone(chatId, user, milestone).then(() => user.save()).catch(() => {});
+        // Delete processing message
+        try { await bot.deleteMessage(chatId, processingMsg.message_id); } catch (e) {}
+
+        if (format === "mp3") {
+          await bot.sendAudio(chatId, directUrl, {
+            caption: `${sourceEmoji} Downloaded via @VidVaultFreeBot`,
+            title: "Audio",
+            performer: "VidVault",
+          });
+        } else {
+          await bot.sendVideo(chatId, directUrl, {
+            caption: `${sourceEmoji} Downloaded via @VidVaultFreeBot\n\n🔗 [VidVaults.com](https://vidvaults.com)`,
+            parse_mode: "Markdown",
+            supports_streaming: true,
+          });
         }
-        pendingDownloads.delete(userId);
-        try { await bot.deleteMessage(chatId, processingMsg.message_id); } catch {}
 
-        const nudge = user.plan === "premium" ? "" : isTaste ? getTasteNudge(user) : getUpgradeNudge(user.downloadsThisMonth, user);
-        const streakLine = getStreakLine(user, incremented);
-        const encodedUrl = encodeURIComponent(url);
-        const downloadLink = `${API_URL}/api/v1/download/redirect?url=${encodedUrl}&quality=${quality}&format=${format}&filename=video`;
-        await bot.sendMessage(
-          chatId,
-          `${sourceEmoji} *Your video is ready\\!*\n\n` +
-          `📥 [Download Now](${escUrl(downloadLink)})\n\n` +
-          `_${esc(sourceText)} • Tap to download_` +
-          streakLine +
-          nudge,
-          { parse_mode: "MarkdownV2" }
-        );
-        return;
+        // Update user stats
+        try {
+          user.downloadsThisMonth += 1;
+          user.totalDownloads += 1;
+          user.lastDownloadAt = new Date();
+          if (isTaste) user.hasUsed4KTaste = true;
+          const { incremented, milestone } = updateStreak(user);
+          await user.save();
+          if (milestone) {
+            applyStreakMilestone(chatId, user, milestone).then(() => user.save()).catch(() => {});
+          }
+          pendingDownloads.delete(userId);
+        } catch (e) {}
+
+        return; // Done! Skip normal flow
       }
     } catch (directErr) {
-      console.log("Direct URL failed, falling back to normal flow:", directErr.message);
+      console.log("Direct send failed, falling back:", directErr.message);
     }
-    // Continue with normal download flow below...
+    // Continue with normal download flow...
 
     const response = await axios.post(
       `${API_URL}/api/v1/download/video`,
