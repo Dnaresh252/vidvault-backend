@@ -2358,11 +2358,14 @@ async function handleDownload(chatId, user, url, params) {
 
         const nudge = user.plan === "premium" ? "" : isTaste ? getTasteNudge(user) : getUpgradeNudge(user.downloadsThisMonth, user);
         const streakLine = getStreakLine(user, incremented);
+        const videoUrl = directRes.data.url;
+        const encodedUrl = encodeURIComponent(videoUrl);
+        const downloadLink = `${API_URL}/api/v1/download/redirect?url=${encodedUrl}&quality=${quality}&format=${format}&filename=video`;
         await bot.sendMessage(
           chatId,
           `${sourceEmoji} *Your video is ready\\!*\n\n` +
-          `📥 [Download Now](${escUrl(directRes.data.url)})\n\n` +
-          `_${esc(sourceText)} • Link valid for 1 hour_` +
+          `📥 [Download Now](${escUrl(downloadLink)})\n\n` +
+          `_${esc(sourceText)} • Tap to download_` +
           streakLine +
           nudge,
           { parse_mode: "MarkdownV2" }
