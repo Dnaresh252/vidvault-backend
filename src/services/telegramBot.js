@@ -493,47 +493,67 @@ async function getUser(msg) {
 
 // Create dynamic Razorpay payment link per user
 // extraNotes: { is_gift: "true", gift_from_id: "..." } for gift flows
+// ─── Enterprise Razorpay link creation — 3 retries, reference_id fallback ────
+// Layer 1: Dynamic link with telegram_id in BOTH notes AND reference_id
+//          → webhook can auto-activate even if notes get stripped
+// Layer 2: Static fallback link (₹79 or ₹499 from Razorpay dashboard)
+//          → webhook detects via amount (≥49900 paise = annual)
 async function createRazorpayLink(user, plan = "monthly", extraNotes = {}) {
   const keyId = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
   const isAnnual = plan === "annual";
   const amountPaise = isAnnual ? ANNUAL_PRICE_INR * 100 : MONTHLY_PRICE_INR * 100;
+  const staticFallback = isAnnual ? ANNUAL_PAYMENT_LINK : PAYMENT_LINK;
 
   if (!keyId || !keySecret || keyId === "your_razorpay_key_id") {
-    console.warn(`⚠️ Razorpay keys not configured — using static fallback link (${plan})`);
-    return isAnnual ? ANNUAL_PAYMENT_LINK : PAYMENT_LINK;
+    console.warn(`⚠️ Razorpay keys not set — static fallback (${plan}) for user ${user.telegramId}`);
+    return staticFallback;
   }
 
-  try {
-    const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
-    const res = await axios.post(
-      "https://api.razorpay.com/v1/payment_links",
-      {
-        amount: amountPaise,
-        currency: "INR",
-        description: isAnnual
-          ? `VidVault Premium — 1 Year Unlimited Downloads (Save ₹${MONTHLY_PRICE_INR * 12 - ANNUAL_PRICE_INR})`
-          : "VidVault Premium — 1 Month Unlimited Downloads",
-        notes: {
-          telegram_id: String(user.telegramId),
-          username: user.username || user.firstName || "user",
-          plan_type: plan,
-          ...extraNotes,
-        },
-        reminder_enable: false,
-        expire_by: Math.floor(Date.now() / 1000) + 86400,
-      },
-      { headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" }, timeout: 8000 },
-    );
-    console.log(`✅ Razorpay ${plan} link created for ${user.telegramId}: ${res.data.short_url}`);
-    return res.data.short_url;
-  } catch (err) {
-    const status = err.response?.status;
-    const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-    console.error(`❌ Razorpay link creation failed [${plan}] status=${status}: ${detail}`);
-    console.error(`   Key ID prefix: ${keyId?.substring(0, 12)}... | Amount: ${amountPaise} paise | User: ${user.telegramId}`);
-    return isAnnual ? ANNUAL_PAYMENT_LINK : PAYMENT_LINK;
+  const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
+  const payload = {
+    amount: amountPaise,
+    currency: "INR",
+    description: isAnnual
+      ? `VidVault Premium — 1 Year (Save ₹${MONTHLY_PRICE_INR * 12 - ANNUAL_PRICE_INR})`
+      : "VidVault Premium — 1 Month Unlimited Downloads",
+    // reference_id = secondary way to carry telegram_id if notes get dropped
+    reference_id: `TG_${user.telegramId}_${plan}_${Date.now()}`,
+    notes: {
+      telegram_id: String(user.telegramId),
+      username: user.username || user.firstName || "user",
+      plan_type: plan,
+      ...extraNotes,
+    },
+    reminder_enable: false,
+    expire_by: Math.floor(Date.now() / 1000) + 86400,
+  };
+
+  // 3 attempts with exponential backoff: 0ms → 1s → 3s
+  const delays = [0, 1000, 3000];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (delays[attempt - 1] > 0)
+      await new Promise((r) => setTimeout(r, delays[attempt - 1]));
+    try {
+      const res = await axios.post(
+        "https://api.razorpay.com/v1/payment_links",
+        payload,
+        { headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" }, timeout: 10000 },
+      );
+      const link = res.data.short_url;
+      console.log(`✅ Razorpay ${plan} link (attempt ${attempt}) for ${user.telegramId}: ${link}`);
+      return link;
+    } catch (err) {
+      const status = err.response?.status;
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      console.error(`❌ Razorpay attempt ${attempt}/3 [${plan}] status=${status}: ${detail}`);
+      if (attempt === 3) {
+        console.warn(`⚠️ All 3 attempts failed — static fallback for user ${user.telegramId}`);
+        return staticFallback;
+      }
+    }
   }
+  return staticFallback;
 }
 
 // Aliases for clarity
@@ -2313,6 +2333,46 @@ async function handleDownload(chatId, user, url, params) {
       );
       return;
     }
+
+    // Try direct URL first — instant, zero storage
+    try {
+      const directRes = await axios.get(`${API_URL}/api/v1/download/direct-url`, {
+        params: { url, quality, format },
+        timeout: 25000,
+      });
+      if (directRes.data?.status === "success" && directRes.data?.url) {
+        const sourceEmoji = directRes.data.cached ? "⚡" : "🚀";
+        const sourceText = directRes.data.cached ? "Instant (cached)" : "Direct CDN";
+
+        user.downloadsThisMonth += 1;
+        user.totalDownloads += 1;
+        user.lastDownloadAt = new Date();
+        if (isTaste) user.hasUsed4KTaste = true;
+        const { incremented, milestone } = updateStreak(user);
+        await user.save();
+        if (milestone) {
+          applyStreakMilestone(chatId, user, milestone).then(() => user.save()).catch(() => {});
+        }
+        pendingDownloads.delete(userId);
+        try { await bot.deleteMessage(chatId, processingMsg.message_id); } catch {}
+
+        const nudge = user.plan === "premium" ? "" : isTaste ? getTasteNudge(user) : getUpgradeNudge(user.downloadsThisMonth, user);
+        const streakLine = getStreakLine(user, incremented);
+        await bot.sendMessage(
+          chatId,
+          `${sourceEmoji} *Your video is ready\\!*\n\n` +
+          `📥 [Download Now](${escUrl(directRes.data.url)})\n\n` +
+          `_${esc(sourceText)} • Link valid for 1 hour_` +
+          streakLine +
+          nudge,
+          { parse_mode: "MarkdownV2" }
+        );
+        return;
+      }
+    } catch (directErr) {
+      console.log("Direct URL failed, falling back to normal flow:", directErr.message);
+    }
+    // Continue with normal download flow below...
 
     const response = await axios.post(
       `${API_URL}/api/v1/download/video`,

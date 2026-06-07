@@ -718,6 +718,57 @@ function getContentType(ext) {
   return types[ext.toLowerCase()] || "application/octet-stream";
 }
 
+exports.getDirectDownloadUrl = async (req, res) => {
+  try {
+    const { url, quality = "medium", format = "mp4" } = req.query;
+    if (!url) return res.status(400).json({ status: "error", message: "URL required" });
+
+    const detection = platformDetector.detectPlatform(url.trim());
+    console.log(`🔗 Direct URL request: ${detection.platform} ${quality} ${format}`);
+
+    // Check R2 cache first — instant!
+    const cached = await cacheService.getR2Url(url.trim(), quality, format);
+    if (cached?.url) {
+      console.log(`⚡ Direct URL — R2 cache HIT`);
+      return res.json({ status: "success", url: cached.url, cached: true, source: "r2" });
+    }
+
+    // Get direct CDN URL
+    const directUrl = await videoDownloader.getDirectUrl(url.trim(), quality, format);
+    if (directUrl) {
+      console.log(`🚀 Direct CDN URL — zero storage`);
+      try {
+        await Download.create({
+          originalUrl: url.trim(),
+          videoId: detection.videoId || url.trim(),
+          platform: detection.platform,
+          status: "completed",
+          requestedQuality: quality,
+          requestedFormat: format,
+          cached: false,
+          processingStartTime: new Date(),
+          processingEndTime: new Date(),
+        });
+      } catch (e) { /* non-critical */ }
+
+      return res.json({
+        status: "success",
+        url: directUrl,
+        cached: false,
+        source: "cdn",
+        expiresIn: 3600,
+      });
+    }
+
+    // Fallback — tell frontend to use normal flow
+    return res.json({ status: "fallback", message: "Use standard download flow" });
+
+  } catch (error) {
+    console.error("❌ Direct URL error:", error);
+    res.status(500).json({ status: "error", message: error.message });
+  }
+};
+
 exports.streamVideo = async (req, res) => {
   try {
     const url = req.query.url;

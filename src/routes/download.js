@@ -103,6 +103,9 @@ const statsLimiter = rateLimit({
 // ✅ Apply rate limiter to stats route
 router.get("/stats", statsLimiter, downloadController.getServerStats);
 
+// Direct CDN URL — instant for supported formats, fallback to normal flow
+router.get("/direct-url", downloadController.getDirectDownloadUrl);
+
 // Mux streaming endpoint — streams video directly to browser
 router.get("/stream", downloadController.streamVideo);
 

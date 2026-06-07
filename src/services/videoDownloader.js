@@ -1434,6 +1434,64 @@ class VideoDownloaderService {
     }
     return options;
   }
+
+  async getDirectUrl(url, quality, format) {
+    try {
+      const platform = platformDetector.detectPlatform(url).platform;
+
+      // High quality YouTube needs merge — skip direct URL
+      if (platform === "youtube" && (quality === "high" || quality === "highest")) {
+        return null;
+      }
+
+      const formatMap = {
+        low: "18",
+        medium: "22/18",
+        high: "22/18",
+        highest: "22/18",
+      };
+
+      const formatStr = format === "mp3"
+        ? "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio"
+        : (formatMap[quality] || "22/18");
+
+      const args = [
+        "--get-url",
+        "--no-playlist",
+        "--socket-timeout", "15",
+        "-f", formatStr,
+      ];
+
+      if (platform === "youtube") {
+        args.push("--cookies", "/tmp/cookies/youtube_cookies.txt");
+        args.push("--geo-bypass-country", "US");
+      }
+
+      if (platform === "instagram") {
+        args.push("--cookies", "/tmp/cookies/instagram_cookies_1.txt");
+      }
+
+      args.push(url);
+
+      return new Promise((resolve) => {
+        const { spawn } = require("child_process");
+        const proc = spawn("yt-dlp", args);
+        let output = "";
+        proc.stdout.on("data", d => { output += d.toString(); });
+        const timer = setTimeout(() => { proc.kill("SIGKILL"); resolve(null); }, 20000);
+        proc.on("close", (code) => {
+          clearTimeout(timer);
+          const lines = output.trim().split("\n").filter(l => l.startsWith("http"));
+          resolve(code === 0 && lines[0] ? lines[0] : null);
+        });
+        proc.on("error", () => { clearTimeout(timer); resolve(null); });
+      });
+    } catch (e) {
+      console.error("getDirectUrl error:", e.message);
+      return null;
+    }
+  }
+
   estimateFileSize(durationSeconds, quality, platform = "generic") {
     if (!durationSeconds || durationSeconds <= 0) return 0;
     if (durationSeconds > 3600) return MAX_FILE_SIZE + 1;
