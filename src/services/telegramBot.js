@@ -2358,8 +2358,7 @@ async function handleDownload(chatId, user, url, params) {
 
         const nudge = user.plan === "premium" ? "" : isTaste ? getTasteNudge(user) : getUpgradeNudge(user.downloadsThisMonth, user);
         const streakLine = getStreakLine(user, incremented);
-        const videoUrl = directRes.data.url;
-        const encodedUrl = encodeURIComponent(videoUrl);
+        const encodedUrl = encodeURIComponent(url);
         const downloadLink = `${API_URL}/api/v1/download/redirect?url=${encodedUrl}&quality=${quality}&format=${format}&filename=video`;
         await bot.sendMessage(
           chatId,
