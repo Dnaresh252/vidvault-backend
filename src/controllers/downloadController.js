@@ -769,6 +769,32 @@ exports.getDirectDownloadUrl = async (req, res) => {
   }
 };
 
+exports.redirectDirectDownload = async (req, res) => {
+  try {
+    const { url, quality = "medium", format = "mp4", filename = "video.mp4" } = req.query;
+    if (!url) return res.status(400).json({ error: "URL required" });
+
+    // Check R2 cache first
+    const cached = await cacheService.getR2Url(url.trim(), quality, format);
+    if (cached?.url) {
+      res.set("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.redirect(302, cached.url);
+    }
+
+    // Get direct CDN URL
+    const directUrl = await videoDownloader.getDirectUrl(url.trim(), quality, format);
+    if (directUrl) {
+      res.set("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.redirect(302, directUrl);
+    }
+
+    // Fallback
+    return res.status(404).json({ error: "Could not get direct URL" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 exports.streamVideo = async (req, res) => {
   try {
     const url = req.query.url;

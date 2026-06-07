@@ -106,6 +106,9 @@ router.get("/stats", statsLimiter, downloadController.getServerStats);
 // Direct CDN URL — instant for supported formats, fallback to normal flow
 router.get("/direct-url", downloadController.getDirectDownloadUrl);
 
+// Redirect to CDN/R2 URL — forces browser download via 302
+router.get("/redirect", downloadController.redirectDirectDownload);
+
 // Mux streaming endpoint — streams video directly to browser
 router.get("/stream", downloadController.streamVideo);
 
