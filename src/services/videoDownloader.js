@@ -1475,7 +1475,8 @@ class VideoDownloaderService {
 
       return new Promise((resolve) => {
         const { spawn } = require("child_process");
-        const proc = spawn("yt-dlp", args);
+        const ytDlpPath = process.env.YTDLP_PATH || "/opt/venv/bin/yt-dlp";
+        const proc = spawn(ytDlpPath, args);
         let output = "";
         proc.stdout.on("data", d => { output += d.toString(); });
         const timer = setTimeout(() => { proc.kill("SIGKILL"); resolve(null); }, 20000);
