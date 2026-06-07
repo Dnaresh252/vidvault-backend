@@ -799,13 +799,14 @@ exports.redirectDirectDownload = async (req, res) => {
       },
     }, (proxyRes) => {
       const ext = format === "mp3" ? "mp3" : "mp4";
-      const contentType = format === "mp3" ? "audio/mpeg" : "video/mp4";
 
       res.set({
         "Content-Disposition": `attachment; filename="${filename}.${ext}"`,
-        "Content-Type": contentType,
+        "Content-Type": "application/octet-stream",
         "Content-Length": proxyRes.headers["content-length"],
         "Accept-Ranges": "bytes",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-cache",
       });
 
       res.status(200);
