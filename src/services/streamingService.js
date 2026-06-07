@@ -268,7 +268,7 @@ class StreamingService {
       const r2Url = `https://downloads.vidvaults.com/${key}`;
       console.log(`☁️ [${streamId}] Cached to R2: ${r2Url.slice(0, 60)}`);
       // Cache in Redis for next users
-      await cacheService.setR2Url(url, quality, format, r2Url, 0, 5.5 * 60 * 60);
+      await cacheService.setR2Url(url, quality, format, r2Url, 0, 55 * 60); // 55 minutes
       return r2Url;
     } catch (err) {
       console.error(`⚠️ [${streamId}] R2 upload error:`, err.message);

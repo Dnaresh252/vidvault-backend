@@ -514,7 +514,7 @@ class VideoDownloaderService {
             format,
             result.downloadUrl,
             result.fileSize,
-            5.5 * 60 * 60, // 5.5 hours
+            55 * 60, // 55 minutes
           );
           return result;
         } finally {
@@ -880,7 +880,7 @@ class VideoDownloaderService {
             format,
             result.downloadUrl,
             result.fileSize,
-            5.5 * 60 * 60, // 5.5 hours
+            55 * 60, // 55 minutes
           );
           return result;
         } finally {
