@@ -774,7 +774,7 @@ exports.redirectDirectDownload = async (req, res) => {
     const { url, quality = "medium", format = "mp4", filename = "video.mp4" } = req.query;
     if (!url) return res.status(400).json({ error: "URL required" });
 
-    // Check R2 cache first
+    // Check R2 cache first — instant redirect
     const cached = await cacheService.getR2Url(url.trim(), quality, format);
     if (cached?.url) {
       res.set("Content-Disposition", `attachment; filename="${filename}"`);
@@ -783,15 +783,51 @@ exports.redirectDirectDownload = async (req, res) => {
 
     // Get direct CDN URL
     const directUrl = await videoDownloader.getDirectUrl(url.trim(), quality, format);
-    if (directUrl) {
-      res.set("Content-Disposition", `attachment; filename="${filename}"`);
-      return res.redirect(302, directUrl);
+    if (!directUrl) {
+      return res.status(404).json({ error: "Could not get direct URL" });
     }
 
-    // Fallback
-    return res.status(404).json({ error: "Could not get direct URL" });
+    // Proxy through our server to force download
+    const https = require("https");
+    const http = require("http");
+    const protocol = directUrl.startsWith("https") ? https : http;
+
+    const proxyReq = protocol.get(directUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://www.youtube.com/",
+      },
+    }, (proxyRes) => {
+      const ext = format === "mp3" ? "mp3" : "mp4";
+      const contentType = format === "mp3" ? "audio/mpeg" : "video/mp4";
+
+      res.set({
+        "Content-Disposition": `attachment; filename="${filename}.${ext}"`,
+        "Content-Type": contentType,
+        "Content-Length": proxyRes.headers["content-length"],
+        "Accept-Ranges": "bytes",
+      });
+
+      res.status(200);
+      proxyRes.pipe(res);
+
+      proxyRes.on("error", (err) => {
+        console.error("Proxy stream error:", err.message);
+        if (!res.headersSent) res.status(500).json({ error: "Stream error" });
+      });
+    });
+
+    proxyReq.on("error", (err) => {
+      console.error("Proxy request error:", err.message);
+      if (!res.headersSent) res.status(500).json({ error: "Proxy error" });
+    });
+
+    // Kill proxy if client disconnects
+    req.on("close", () => proxyReq.destroy());
+
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("❌ Redirect download error:", error);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
   }
 };
 
