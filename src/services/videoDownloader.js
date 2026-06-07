@@ -101,7 +101,7 @@ const JS_RUNTIME = process.platform === "win32" ? "node" : "node:/usr/local/bin/
 const MAX_FILE_SIZE = 400 * 1024 * 1024; // 400MB hard limit
 const RECOMMENDED_QUALITY = "medium"; // 720p default
 const TEMP_FILE_MAX_AGE = 5 * 60 * 1000; // 5 minutes
-const R2_FILE_MAX_AGE = 6 * 60 * 60 * 1000; // 6 hours
+const R2_FILE_MAX_AGE = 1 * 60 * 60 * 1000; // 1 hour
 
 class VideoDownloaderService {
   constructor() {
