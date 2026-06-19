@@ -1422,6 +1422,8 @@ class VideoDownloaderService {
       JS_RUNTIME,
       "--extractor-args",
       "youtube:player_client=web,default",
+      "--extractor-args",
+      "youtubepot-bgutilhttp:disable_innertube=1",
     );
 
     if (platform === "youtube") {
