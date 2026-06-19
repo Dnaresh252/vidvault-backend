@@ -1,6 +1,6 @@
 # Force rebuild - Python 3.9 compatible
-FROM node:20-slim
-ARG CACHEBUST=20260517-nosleep
+FROM node:22-slim
+ARG CACHEBUST=20260608-node22
 
 RUN apt-get update && apt-get install -y \
     python3 \
